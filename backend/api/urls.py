@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-
+from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
     # Chat / Messaging
@@ -28,5 +28,18 @@ urlpatterns = [
         "search/<username>/",
         views.SearchUser.as_view(),
         name="search-user",
+    ),
+
+    # Authentication
+    path(
+        "token/",
+        views.MyTokenObtainPairView.as_view(),
+        name="token_obtain_pair",
+    ),
+
+    path(
+        "token/refresh/",
+        TokenRefreshView.as_view(),
+        name="token_refresh",
     ),
 ]

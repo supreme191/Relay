@@ -1,8 +1,9 @@
 from django.db.models import OuterRef, Subquery, Q
 
 from api.models import User, Profile, ChatMessage
-from api.serializers import MessageSerializer, ProfileSerializer
+from api.serializers import MessageSerializer, MyTokenObtainPairSerializer, ProfileSerializer
 
+from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework import status
@@ -81,3 +82,7 @@ class SearchUser(generics.ListAPIView):
         serializer = self.get_serializer(users, many=True)
 
         return Response(serializer.data)
+
+
+class MyTokenObtainPairView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer

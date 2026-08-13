@@ -1,6 +1,8 @@
 from api.models import User, ChatMessage, Profile
 from django.contrib.auth.password_validation import validate_password
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework import serializers
+
 
 class UserSerializer(serializers.ModelSerializer): 
  
@@ -38,7 +40,20 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user 
  
 
-     
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+
+        token["username"] = user.username
+        token["email"] = user.email
+
+        return token
+
+
+
 class ProfileSerializer(serializers.ModelSerializer): 
  
     class Meta: 
