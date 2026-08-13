@@ -1,16 +1,25 @@
 from django.db.models import OuterRef, Subquery, Q
 
 from api.models import User, Profile, ChatMessage
-from api.serializers import MessageSerializer, MyTokenObtainPairSerializer, ProfileSerializer
+from api.serializers import MessageSerializer, MyTokenObtainPairSerializer, ProfileSerializer, RegisterSerializer
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
+
+
+class RegisterView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    permission_classes = [AllowAny]
+    serializer_class = RegisterSerializer
 
 
 class MyInbox(generics.ListAPIView):
     serializer_class = MessageSerializer
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         user_id = self.kwargs['user_id']
@@ -36,6 +45,7 @@ class MyInbox(generics.ListAPIView):
 
 class GetMessages(generics.ListAPIView):
     serializer_class = MessageSerializer
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         sender_id = self.kwargs['sender_id']
@@ -51,15 +61,20 @@ class GetMessages(generics.ListAPIView):
 
 class SendMessages(generics.CreateAPIView):
     serializer_class = MessageSerializer
+    permission_classes = [IsAuthenticated]
 
 
 class ProfileDetail(generics.RetrieveUpdateAPIView):
     serializer_class = ProfileSerializer
+    permission_classes = [IsAuthenticated]
+
     queryset = Profile.objects.all()
 
 
 class SearchUser(generics.ListAPIView):
     serializer_class = ProfileSerializer
+    permission_classes = [IsAuthenticated]
+    
     queryset = Profile.objects.all()
 
     def list(self, request, *args, **kwargs):

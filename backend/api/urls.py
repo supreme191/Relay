@@ -3,6 +3,13 @@ from . import views
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
+    # Register
+    path(
+        "register/",
+        views.RegisterView.as_view(),
+        name="register",
+    ),
+
     # Chat / Messaging
     path("my-messages/<user_id>/", views.MyInbox.as_view(), name="my-messages"),
     path(
