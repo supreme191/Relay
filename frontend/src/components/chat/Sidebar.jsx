@@ -1,4 +1,39 @@
-const Sidebar = () => {
+import { useEffect, useState } from "react";
+import { useAuth } from "../../context/AuthContext";
+import { getInbox } from "../../services/chatService";
+
+const Sidebar = ({ onSelectUser, inboxRefresh }) => {
+    const { user, accessToken } = useAuth();
+
+    const [conversations, setConversations] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        const fetchInbox = async () => {
+            if (!user || !accessToken) {
+                return;
+            }
+
+            try {
+                setLoading(true);
+                setError("");
+
+                const data = await getInbox(user.user_id, accessToken);
+
+                setConversations(data);
+            } catch (error) {
+                console.error("Failed to load inbox:", error);
+
+                setError("Unable to load conversations.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchInbox();
+    }, [user, accessToken, inboxRefresh]);
+
     return (
         <aside className="w-80 bg-white border-r border-gray-200 flex flex-col">
 
@@ -21,68 +56,64 @@ const Sidebar = () => {
             {/* Conversations */}
             <div className="flex-1 overflow-y-auto">
 
-                {/* Conversation 1 */}
-                <div className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50">
-                    <div className="w-11 h-11 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
-                        JD
-                    </div>
+                {loading && (
+                    <p className="p-4 text-sm text-gray-500">
+                        Loading conversations...
+                    </p>
+                )}
 
-                    <div className="flex-1 min-w-0">
-                        <h2 className="font-medium text-gray-900">
-                            John Doe
-                        </h2>
+                {error && (
+                    <p className="p-4 text-sm text-red-500">
+                        {error}
+                    </p>
+                )}
 
-                        <p className="text-sm text-gray-500 truncate">
-                            Hey! How are you?
-                        </p>
-                    </div>
+                {!loading && !error && conversations.length === 0 && (
+                    <p className="p-4 text-sm text-gray-500">
+                        No conversations yet.
+                    </p>
+                )}
 
-                    <span className="text-xs text-gray-400">
-                        10:30
-                    </span>
-                </div>
+                {!loading &&
+                    !error &&
+                    conversations.map((conversation) => {
 
-                {/* Conversation 2 */}
-                <div className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50">
-                    <div className="w-11 h-11 rounded-full bg-purple-500 flex items-center justify-center text-white font-semibold">
-                        AS
-                    </div>
+                        const otherUser =
+                            String(conversation.sender.id) === String(user.user_id)
+                                ? conversation.reciever_profile
+                                : conversation.sender_profile;
 
-                    <div className="flex-1 min-w-0">
-                        <h2 className="font-medium text-gray-900">
-                            Alex Smith
-                        </h2>
+                        return (
+                                <div
+                                    key={conversation.id}
+                                    onClick={() => onSelectUser(otherUser)}
+                                    className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50"
+                                >
 
-                        <p className="text-sm text-gray-500 truncate">
-                            See you tomorrow!
-                        </p>
-                    </div>
+                                <div className="w-11 h-11 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
+                                    {otherUser?.full_name?.charAt(0)?.toUpperCase() || "U"}
+                                </div>
 
-                    <span className="text-xs text-gray-400">
-                        09:15
-                    </span>
-                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h2 className="font-medium text-gray-900 truncate">
+                                        {otherUser?.full_name || "Unknown User"}
+                                    </h2>
 
-                {/* Conversation 3 */}
-                <div className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50">
-                    <div className="w-11 h-11 rounded-full bg-green-500 flex items-center justify-center text-white font-semibold">
-                        EM
-                    </div>
+                                    <p className="text-sm text-gray-500 truncate">
+                                        {conversation.message}
+                                    </p>
+                                </div>
 
-                    <div className="flex-1 min-w-0">
-                        <h2 className="font-medium text-gray-900">
-                            Emma Miller
-                        </h2>
+                                <span className="text-xs text-gray-400">
+                                    {new Date(conversation.date).toLocaleTimeString([], {
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                    })}
+                                </span>
 
-                        <p className="text-sm text-gray-500 truncate">
-                            Thanks!
-                        </p>
-                    </div>
-
-                    <span className="text-xs text-gray-400">
-                        Yesterday
-                    </span>
-                </div>
+                            </div>
+                        );
+                    })}
 
             </div>
 
