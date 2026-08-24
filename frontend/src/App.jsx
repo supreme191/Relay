@@ -1,14 +1,11 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Message from "./pages/Message/Message";
-
 function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/inbox" element={<Message />} />
-      </Routes>
-    </BrowserRouter>
-  );
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-100">
+            <h1 className="text-4xl font-bold text-blue-600">
+                Relay
+            </h1>
+        </div>
+    );
 }
 
 export default App;
