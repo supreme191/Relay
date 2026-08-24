@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 const Register = () => {
@@ -166,6 +167,16 @@ const Register = () => {
                     >
                         {loading ? "Creating account..." : "Create Account"}
                     </button>
+
+                    <p className="text-center text-sm text-gray-500">
+                        Already have an account?{" "}
+                        <Link
+                            to="/login"
+                            className="font-medium text-blue-600 hover:text-blue-700"
+                        >
+                            Sign in
+                        </Link>
+                    </p>
 
                 </form>
 
