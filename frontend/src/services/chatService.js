@@ -51,3 +51,17 @@ export const sendMessage = async (
 
     return response.data;
 };
+
+
+export const searchUsers = async (username, accessToken) => {
+    const response = await api.get(
+        `search/${encodeURIComponent(username)}/`,
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            },
+        }
+    );
+
+    return response.data;
+};
