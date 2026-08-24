@@ -1,10 +1,6 @@
 import { createContext, useContext, useState } from "react";
 import { jwtDecode } from "jwt-decode";
-import {
-    loginUser,
-    registerUser,
-    refreshAccessToken,
-} from "../services/authService";
+import { loginUser, registerUser } from "../services/authService";
 
 const AuthContext = createContext();
 
@@ -45,7 +41,9 @@ export const AuthProvider = ({ children }) => {
     };
 
     const register = async (userData) => {
-        return await registerUser(userData);
+        const data = await registerUser(userData);
+
+        return data;
     };
 
     const logout = () => {
@@ -57,34 +55,18 @@ export const AuthProvider = ({ children }) => {
         setUser(null);
     };
 
-    const refreshTokenAndUpdate = async () => {
-        if (!refreshToken) {
-            return null;
-        }
-
-        const data = await refreshAccessToken(refreshToken);
-
-        localStorage.setItem("accessToken", data.access);
-
-        setAccessToken(data.access);
-        setUser(jwtDecode(data.access));
-
-        return data.access;
-    };
-
     const isAuthenticated = !!accessToken;
 
     return (
         <AuthContext.Provider
             value={{
+                user,
                 accessToken,
                 refreshToken,
-                user,
                 isAuthenticated,
                 login,
                 register,
                 logout,
-                refreshTokenAndUpdate,
             }}
         >
             {children}

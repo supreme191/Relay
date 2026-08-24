@@ -3,7 +3,7 @@ import { useAuth } from "../../context/AuthContext";
 import { getInbox, searchUsers } from "../../services/chatService";
 
 const Sidebar = ({ onSelectUser, inboxRefresh }) => {
-    const { user, accessToken } = useAuth();
+    const { user, accessToken, logout } = useAuth();
 
     const [conversations, setConversations] = useState([]);
     const [searchResults, setSearchResults] = useState([]);
@@ -89,10 +89,18 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
         <aside className="w-80 bg-white border-r border-gray-200 flex flex-col">
 
             {/* Sidebar Header */}
-            <div className="h-16 px-5 flex items-center border-b border-gray-200">
+            <div className="h-16 px-5 flex items-center justify-between border-b border-gray-200">
                 <h1 className="text-2xl font-bold text-gray-900">
                     Relay
                 </h1>
+
+                <button
+                    type="button"
+                    onClick={logout}
+                    className="text-sm font-medium text-gray-500 hover:text-red-600 transition"
+                >
+                    Logout
+                </button>
             </div>
 
             {/* Search */}
