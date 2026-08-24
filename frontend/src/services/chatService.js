@@ -65,3 +65,33 @@ export const searchUsers = async (username, accessToken) => {
 
     return response.data;
 };
+
+
+export const getProfile = async (userId, accessToken) => {
+    const response = await api.get(`profile/${userId}/`, {
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+        },
+    });
+
+    return response.data;
+};
+
+
+export const updateProfile = async (
+    profileId,
+    profileData,
+    accessToken
+) => {
+    const response = await api.patch(
+        `profile/${profileId}/`,
+        profileData,
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            },
+        }
+    );
+
+    return response.data;
+};

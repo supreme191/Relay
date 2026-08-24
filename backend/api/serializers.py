@@ -58,7 +58,7 @@ class ProfileSerializer(serializers.ModelSerializer):
  
     class Meta: 
         model = Profile 
-        fields = [ 'id',  'user',  'full_name', 'image' ] 
+        fields = [ 'id',  'user',  'full_name', 'bio', 'image' ] 
      
     def __init__(self, *args, **kwargs): 
         super(ProfileSerializer, self).__init__(*args, **kwargs) 

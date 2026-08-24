@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getInbox, searchUsers } from "../../services/chatService";
+import { getInbox, searchUsers, getProfile } from "../../services/chatService";
+
+import { Link } from "react-router-dom";
 
 const Sidebar = ({ onSelectUser, inboxRefresh }) => {
     const { user, accessToken, logout } = useAuth();
@@ -13,6 +15,8 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
     const [loading, setLoading] = useState(true);
     const [searching, setSearching] = useState(false);
     const [error, setError] = useState("");
+
+    const [profile, setProfile] = useState(null);
 
     useEffect(() => {
         const fetchInbox = async () => {
@@ -41,6 +45,30 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
 
         fetchInbox();
     }, [user, accessToken, inboxRefresh]);
+
+    useEffect(() => {
+        const fetchProfile = async () => {
+            if (!user || !accessToken) {
+                return;
+            }
+
+            try {
+                const data = await getProfile(
+                    user.user_id,
+                    accessToken
+                );
+
+                setProfile(data);
+            } catch (error) {
+                console.error(
+                    "Failed to load profile:",
+                    error
+                );
+            }
+        };
+
+        fetchProfile();
+    }, [user, accessToken]);
 
     useEffect(() => {
         const fetchSearchResults = async () => {
@@ -230,6 +258,35 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
                             </div>
                         );
                     })}
+
+            </div>
+
+            <div className="border-t border-gray-200 p-4">
+
+                {profile && (
+                    <Link
+                        to="/profile"
+                        className="flex items-center gap-3 rounded-lg p-2 -m-2 hover:bg-gray-50 transition"
+                    >
+
+                        <div className="w-11 h-11 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
+                            {profile.full_name
+                                ?.charAt(0)
+                                ?.toUpperCase() || "U"}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                            <h2 className="font-medium text-gray-900 truncate">
+                                {profile.full_name || "User"}
+                            </h2>
+
+                            <p className="text-sm text-gray-500 truncate">
+                                @{profile.user?.username}
+                            </p>
+                        </div>
+
+                    </Link>
+                )}
 
             </div>
 
