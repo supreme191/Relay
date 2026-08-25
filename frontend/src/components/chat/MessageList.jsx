@@ -91,7 +91,7 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
     }
 
     return (
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-6">
 
             {loading && (
                 <p className="text-center text-sm text-gray-500">
@@ -118,6 +118,13 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
                 messages.map((message, index) => {
                     const isMine =
                         String(message.sender.id) === String(user.user_id);
+                    
+                    const previousMessage = index > 0 ? messages[index - 1] : null;
+
+                    const isSameSender =
+                        previousMessage &&
+                        String(previousMessage.sender.id) ===
+                            String(message.sender.id);
 
                     const currentDateKey = getDateKey(message.date);
 
@@ -145,6 +152,10 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
                                     isMine
                                         ? "justify-end"
                                         : "justify-start"
+                                } ${
+                                    isSameSender
+                                        ? "mt-1"
+                                        : "mt-3"
                                 }`}
                             >
                                 <div
