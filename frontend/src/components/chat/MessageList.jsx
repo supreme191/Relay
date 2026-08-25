@@ -2,6 +2,39 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { getMessages } from "../../services/chatService";
 
+const getDateKey = (dateString) => {
+    const date = new Date(dateString);
+
+    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+};
+
+const getDateLabel = (dateString) => {
+    const date = new Date(dateString);
+
+    const today = new Date();
+
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    const dateKey = getDateKey(dateString);
+    const todayKey = getDateKey(today);
+    const yesterdayKey = getDateKey(yesterday);
+
+    if (dateKey === todayKey) {
+        return "Today";
+    }
+
+    if (dateKey === yesterdayKey) {
+        return "Yesterday";
+    }
+
+    return date.toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+    });
+};
+
 const MessageList = ({ selectedUser, messageRefresh }) => {
     const { user, accessToken } = useAuth();
 
@@ -82,48 +115,69 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
 
             {!loading &&
                 !error &&
-                messages.map((message) => {
-                    const isMine = String(message.sender.id) === String(user.user_id);
+                messages.map((message, index) => {
+                    const isMine =
+                        String(message.sender.id) === String(user.user_id);
+
+                    const currentDateKey = getDateKey(message.date);
+
+                    const previousDateKey =
+                        index > 0
+                            ? getDateKey(messages[index - 1].date)
+                            : null;
+
+                    const showDateSeparator =
+                        currentDateKey !== previousDateKey;
 
                     return (
-                        <div
-                            key={message.id}
-                            className={`flex ${
-                                isMine
-                                    ? "justify-end"
-                                    : "justify-start"
-                            }`}
-                        >
+                        <div key={message.id}>
+
+                            {showDateSeparator && (
+                                <div className="flex justify-center my-4">
+                                    <span className="rounded-full bg-gray-200 px-4 py-1 text-xs font-medium text-gray-600 shadow-sm">
+                                        {getDateLabel(message.date)}
+                                    </span>
+                                </div>
+                            )}
+
                             <div
-                                className={`max-w-md rounded-2xl px-4 py-3 ${
+                                className={`flex ${
                                     isMine
-                                        ? "bg-blue-600 text-white rounded-br-md"
-                                        : "bg-white text-gray-800 shadow-sm rounded-bl-md"
+                                        ? "justify-end"
+                                        : "justify-start"
                                 }`}
                             >
-                                <p className="text-sm">
-                                    {message.message}
-                                </p>
-
-                                <span
-                                    className={`block text-xs mt-1 ${
+                                <div
+                                    className={`max-w-md rounded-2xl px-4 py-3 ${
                                         isMine
-                                            ? "text-blue-100"
-                                            : "text-gray-400"
+                                            ? "bg-blue-600 text-white rounded-br-md"
+                                            : "bg-white text-gray-800 shadow-sm rounded-bl-md"
                                     }`}
                                 >
-                                    {new Date(
-                                        message.date
-                                    ).toLocaleTimeString([], {
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                    })}
-                                </span>
+                                    <p className="text-sm">
+                                        {message.message}
+                                    </p>
+
+                                    <span
+                                        className={`block text-xs mt-1 ${
+                                            isMine
+                                                ? "text-blue-100"
+                                                : "text-gray-400"
+                                        }`}
+                                    >
+                                        {new Date(
+                                            message.date
+                                        ).toLocaleTimeString([], {
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                        })}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     );
                 })}
-            
+
             <div ref={messagesEndRef} />
 
         </div>
