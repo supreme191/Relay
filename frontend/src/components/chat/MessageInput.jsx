@@ -8,10 +8,10 @@ const MessageInput = ({ selectedUser, onMessageSent }) => {
     const [message, setMessage] = useState("");
     const [sending, setSending] = useState(false);
 
-    const handleSend = async (e) => {
-        e.preventDefault();
+    const handleSend = async () => {
+        const trimmedMessage = message.trim();
 
-        if (!selectedUser || !message.trim()) {
+        if (!trimmedMessage || !selectedUser || sending) {
             return;
         }
 
@@ -21,50 +21,69 @@ const MessageInput = ({ selectedUser, onMessageSent }) => {
             await sendMessage(
                 user.user_id,
                 selectedUser.user.id,
-                message.trim(),
+                trimmedMessage,
                 accessToken
             );
 
             setMessage("");
 
-            onMessageSent();
+            if (onMessageSent) {
+                onMessageSent();
+            }
         } catch (error) {
-            console.error("Failed to send message:", error);
+            console.error(
+                "Failed to send message:",
+                error
+            );
         } finally {
             setSending(false);
         }
     };
 
+    const handleKeyDown = (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    };
+
+    if (!selectedUser) {
+        return null;
+    }
+
     return (
-        <div className="bg-white border-t border-gray-200 p-4">
+        <div className="border-t border-gray-200 bg-white p-4">
 
-            <form
-                onSubmit={handleSend}
-                className="flex items-center gap-3"
-            >
+            <div className="flex items-end gap-3">
 
-                <input
-                    type="text"
+                <textarea
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder={
-                        selectedUser
-                            ? "Type a message..."
-                            : "Select a conversation..."
+                    onChange={(e) =>
+                        setMessage(e.target.value)
                     }
-                    disabled={!selectedUser || sending}
-                    className="flex-1 rounded-full bg-gray-100 px-5 py-3 text-sm outline-none transition focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    onKeyDown={handleKeyDown}
+                    placeholder="Type a message..."
+                    rows={1}
+                    disabled={sending}
+                    className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
                 />
 
                 <button
-                    type="submit"
-                    disabled={!selectedUser || !message.trim() || sending}
-                    className="rounded-full bg-blue-600 px-6 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    type="button"
+                    onClick={handleSend}
+                    disabled={
+                        !message.trim() || sending
+                    }
+                    className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     {sending ? "Sending..." : "Send"}
                 </button>
 
-            </form>
+            </div>
+
+            <p className="mt-2 text-xs text-gray-400">
+                Press Enter to send • Shift + Enter for a new line
+            </p>
 
         </div>
     );

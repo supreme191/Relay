@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { getMessages } from "../../services/chatService";
 
@@ -8,6 +8,8 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
     const [messages, setMessages] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+
+    const messagesEndRef = useRef(null);
 
     useEffect(() => {
         const fetchMessages = async () => {
@@ -38,6 +40,12 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
 
         fetchMessages();
     }, [user, accessToken, selectedUser, messageRefresh]);
+
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({
+            behavior: "auto",
+        });
+    }, [messages]);
 
     if (!selectedUser) {
         return (
@@ -115,6 +123,8 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
                         </div>
                     );
                 })}
+            
+            <div ref={messagesEndRef} />
 
         </div>
     );
