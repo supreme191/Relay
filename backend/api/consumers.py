@@ -5,6 +5,12 @@ import json
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
+        user = self.scope["user"]
+
+        if user.is_anonymous:
+            await self.close()
+            return
+
         self.room_name = self.scope["url_route"]["kwargs"]["room_name"]
 
         self.room_group_name = self.room_name
@@ -20,6 +26,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             text_data=json.dumps({
                 "type": "connection",
                 "message": f"Connected to {self.room_name}",
+                "user_id": user.id,
             })
         )
 
@@ -47,7 +54,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name,
-        )
+        if hasattr(self, "room_group_name"):
+            await self.channel_layer.group_discard(
+                self.room_group_name,
+                self.channel_name,
+            )
