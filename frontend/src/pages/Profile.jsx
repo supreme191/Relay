@@ -31,8 +31,7 @@ const Profile = () => {
                 setError("");
 
                 const data = await getProfile(
-                    user.user_id,
-                    accessToken
+                    user.user_id
                 );
 
                 setProfile(data);
@@ -71,8 +70,7 @@ const Profile = () => {
                 {
                     full_name: fullName,
                     bio: bio,
-                },
-                accessToken
+                }
             );
 
             setProfile(updatedProfile);

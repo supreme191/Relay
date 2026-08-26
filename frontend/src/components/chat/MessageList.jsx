@@ -57,8 +57,7 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
 
                 const data = await getMessages(
                 user.user_id,
-                selectedUser.user.id,
-                accessToken
+                selectedUser.user.id
             );
 
                 setMessages(data);

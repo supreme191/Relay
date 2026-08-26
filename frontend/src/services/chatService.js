@@ -1,11 +1,9 @@
 import api from "./api";
 
-export const getInbox = async (userId, accessToken) => {
-    const response = await api.get(`my-messages/${userId}/`, {
-        headers: {
-            Authorization: `Bearer ${accessToken}`,
-        },
-    });
+export const getInbox = async (userId) => {
+    const response = await api.get(
+        `my-messages/${userId}/`
+    );
 
     return response.data;
 };
@@ -13,16 +11,10 @@ export const getInbox = async (userId, accessToken) => {
 
 export const getMessages = async (
     senderId,
-    receiverId,
-    accessToken
+    receiverId
 ) => {
     const response = await api.get(
-        `get-messages/${senderId}/${receiverId}/`,
-        {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-            },
-        }
+        `get-messages/${senderId}/${receiverId}/`
     );
 
     return response.data;
@@ -32,8 +24,7 @@ export const getMessages = async (
 export const sendMessage = async (
     senderId,
     receiverId,
-    message,
-    accessToken
+    message
 ) => {
     const response = await api.post(
         "send-messages/",
@@ -41,11 +32,6 @@ export const sendMessage = async (
             sender: senderId,
             reciever: receiverId,
             message: message,
-        },
-        {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-            },
         }
     );
 
@@ -53,26 +39,19 @@ export const sendMessage = async (
 };
 
 
-export const searchUsers = async (username, accessToken) => {
+export const searchUsers = async (username) => {
     const response = await api.get(
-        `search/${encodeURIComponent(username)}/`,
-        {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-            },
-        }
+        `search/${encodeURIComponent(username)}/`
     );
 
     return response.data;
 };
 
 
-export const getProfile = async (userId, accessToken) => {
-    const response = await api.get(`profile/${userId}/`, {
-        headers: {
-            Authorization: `Bearer ${accessToken}`,
-        },
-    });
+export const getProfile = async (userId) => {
+    const response = await api.get(
+        `profile/${userId}/`
+    );
 
     return response.data;
 };
@@ -80,17 +59,11 @@ export const getProfile = async (userId, accessToken) => {
 
 export const updateProfile = async (
     profileId,
-    profileData,
-    accessToken
+    profileData
 ) => {
     const response = await api.patch(
         `profile/${profileId}/`,
-        profileData,
-        {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-            },
-        }
+        profileData
     );
 
     return response.data;

@@ -21,8 +21,7 @@ const MessageInput = ({ selectedUser, onMessageSent }) => {
             await sendMessage(
                 user.user_id,
                 selectedUser.user.id,
-                trimmedMessage,
-                accessToken
+                trimmedMessage
             );
 
             setMessage("");

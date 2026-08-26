@@ -29,8 +29,7 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
                 setError("");
 
                 const data = await getInbox(
-                    user.user_id,
-                    accessToken
+                    user.user_id
                 );
 
                 setConversations(data);
@@ -54,8 +53,7 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
 
             try {
                 const data = await getProfile(
-                    user.user_id,
-                    accessToken
+                    user.user_id
                 );
 
                 setProfile(data);
@@ -81,8 +79,7 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
                 setSearching(true);
 
                 const data = await searchUsers(
-                    search.trim(),
-                    accessToken
+                    search.trim()
                 );
 
                 setSearchResults(data);
