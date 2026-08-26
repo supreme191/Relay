@@ -39,9 +39,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         data = json.loads(text_data)
 
         message = data.get("message")
-
-        sender_id = data.get("sender")
         receiver_id = data.get("receiver")
+
+        sender_id = self.scope["user"].id
 
         chat_message = await self.create_message(
             sender_id,

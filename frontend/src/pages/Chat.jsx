@@ -102,6 +102,7 @@ const Chat = () => {
 
                 <MessageInput
                     selectedUser={selectedUser}
+                    socketRef={socketRef}
                     onMessageSent={handleMessageSent}
                 />
 

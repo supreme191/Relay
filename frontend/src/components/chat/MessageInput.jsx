@@ -1,81 +1,73 @@
 import { useState } from "react";
-import { useAuth } from "../../context/AuthContext";
-import { sendMessage } from "../../services/chatService";
 
-const MessageInput = ({ selectedUser, onMessageSent }) => {
-    const { user, accessToken } = useAuth();
 
+const MessageInput = ({
+    selectedUser,
+    socketRef,
+}) => {
     const [message, setMessage] = useState("");
-    const [sending, setSending] = useState(false);
 
-    const handleSend = async () => {
+    const handleSend = () => {
         const trimmedMessage = message.trim();
 
-        if (!trimmedMessage || !selectedUser || sending) {
+        if (!trimmedMessage) {
             return;
         }
 
-        try {
-            setSending(true);
-
-            await sendMessage(
-                user.user_id,
-                selectedUser.user.id,
-                trimmedMessage
-            );
-
-            setMessage("");
-
-            if (onMessageSent) {
-                onMessageSent();
-            }
-        } catch (error) {
-            console.error(
-                "Failed to send message:",
-                error
-            );
-        } finally {
-            setSending(false);
+        if (!selectedUser) {
+            return;
         }
+
+        if (
+            !socketRef.current ||
+            socketRef.current.readyState !== WebSocket.OPEN
+        ) {
+            console.error("WebSocket is not connected.");
+            return;
+        }
+
+        socketRef.current.send(
+            JSON.stringify({
+                receiver: selectedUser.user.id,
+                message: trimmedMessage,
+            })
+        );
+
+        setMessage("");
     };
 
-    const handleKeyDown = (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
+    const handleKeyDown = (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
             handleSend();
         }
     };
 
-    if (!selectedUser) {
-        return null;
-    }
-
     return (
-        <div className="border-t border-gray-200 bg-white p-4">
+        <div className="border-t bg-white p-4">
 
             <div className="flex items-end gap-3">
 
                 <textarea
                     value={message}
-                    onChange={(e) =>
-                        setMessage(e.target.value)
+                    onChange={(event) =>
+                        setMessage(event.target.value)
                     }
                     onKeyDown={handleKeyDown}
                     placeholder="Type a message..."
                     rows={1}
-                    disabled={sending}
-                    className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                    className="flex-1 resize-none rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
 
                 <button
-                    type="button"
                     onClick={handleSend}
                     disabled={
-                        !message.trim() || sending
+                        !message.trim() ||
+                        !selectedUser
                     }
-                    className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-2xl bg-blue-600 px-6 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
                 >
-                    {sending ? "Sending..." : "Send"}
+                    Send
                 </button>
 
             </div>
@@ -87,5 +79,6 @@ const MessageInput = ({ selectedUser, onMessageSent }) => {
         </div>
     );
 };
+
 
 export default MessageInput;
