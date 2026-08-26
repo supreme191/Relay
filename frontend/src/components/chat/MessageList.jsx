@@ -35,7 +35,7 @@ const getDateLabel = (dateString) => {
     });
 };
 
-const MessageList = ({ selectedUser, messageRefresh }) => {
+const MessageList = ({ selectedUser, messageRefresh, newMessage }) => {
     const { user, accessToken } = useAuth();
 
     const [messages, setMessages] = useState([]);
@@ -79,6 +79,17 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
         });
     }, [messages]);
 
+    useEffect(() => {
+        if (!newMessage) {
+            return;
+        }
+
+        setMessages((currentMessages) => [
+            ...currentMessages,
+            newMessage,
+        ]);
+    }, [newMessage]);
+
     if (!selectedUser) {
         return (
             <div className="flex-1 flex items-center justify-center">
@@ -116,14 +127,14 @@ const MessageList = ({ selectedUser, messageRefresh }) => {
                 !error &&
                 messages.map((message, index) => {
                     const isMine =
-                        String(message.sender.id) === String(user.user_id);
+                        String(message.sender) === String(user.user_id);
                     
                     const previousMessage = index > 0 ? messages[index - 1] : null;
 
                     const isSameSender =
                         previousMessage &&
-                        String(previousMessage.sender.id) ===
-                            String(message.sender.id);
+                        String(previousMessage.sender) ===
+                            String(message.sender);
 
                     const currentDateKey = getDateKey(message.date);
 

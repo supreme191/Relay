@@ -1,4 +1,9 @@
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+
+from api.models import ChatMessage
+from api.serializers import MessageSerializer
+
 import json
 
 
@@ -35,23 +40,44 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         message = data.get("message")
 
+        sender_id = data.get("sender")
+        receiver_id = data.get("receiver")
+
+        chat_message = await self.create_message(
+            sender_id,
+            receiver_id,
+            message,
+        )
+
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 "type": "chat_message",
-                "message": message,
+                "message": chat_message,
             }
         )
 
     async def chat_message(self, event):
-        message = event["message"]
-
         await self.send(
             text_data=json.dumps({
                 "type": "message",
-                "message": message,
+                "message": event["message"],
             })
         )
+
+    @database_sync_to_async
+    def create_message(self, sender_id, receiver_id, message):
+        chat_message = ChatMessage.objects.create(
+            sender_id=sender_id,
+            reciever_id=receiver_id,
+            message=message,
+        )
+
+        serializer = MessageSerializer(
+            chat_message
+        )
+
+        return serializer.data
 
     async def disconnect(self, close_code):
         if hasattr(self, "room_group_name"):

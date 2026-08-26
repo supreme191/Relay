@@ -214,7 +214,7 @@ const Sidebar = ({ onSelectUser, inboxRefresh }) => {
                     conversations.map((conversation) => {
 
                         const otherUser =
-                            String(conversation.sender.id) ===
+                            String(conversation.sender) ===
                             String(user.user_id)
                                 ? conversation.reciever_profile
                                 : conversation.sender_profile;
