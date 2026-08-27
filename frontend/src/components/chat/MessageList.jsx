@@ -127,14 +127,14 @@ const MessageList = ({ selectedUser, messageRefresh, newMessage }) => {
                 !error &&
                 messages.map((message, index) => {
                     const isMine =
-                        String(message.sender) === String(user.user_id);
+                        String(message.sender.id) === String(user.user_id);
                     
                     const previousMessage = index > 0 ? messages[index - 1] : null;
 
                     const isSameSender =
                         previousMessage &&
-                        String(previousMessage.sender) ===
-                            String(message.sender);
+                        String(previousMessage.sender.id) ===
+                            String(message.sender.id);
 
                     const currentDateKey = getDateKey(message.date);
 
