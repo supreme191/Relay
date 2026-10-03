@@ -22,6 +22,11 @@ urlpatterns = [
         views.SendMessages.as_view(),
         name="send-messages",
     ),
+    path(
+        "messages/read/<int:other_user_id>/",
+        views.MarkAsRead.as_view(),
+        name="mark-as-read",
+    ),
 
     # Profile
     path(

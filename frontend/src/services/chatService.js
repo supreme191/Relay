@@ -39,6 +39,15 @@ export const sendMessage = async (
 };
 
 
+export const markAsRead = async (otherUserId) => {
+    const response = await api.patch(
+        `messages/read/${otherUserId}/`
+    );
+
+    return response.data;
+};
+
+
 export const searchUsers = async (username) => {
     const response = await api.get(
         `search/${encodeURIComponent(username)}/`

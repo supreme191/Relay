@@ -11,3 +11,17 @@ export const createChatSocket = (roomName) => {
 
     return socket;
 };
+
+export const createInboxSocket = (userId) => {
+    const token = localStorage.getItem("accessToken");
+
+    if (!token) {
+        throw new Error("No access token found.");
+    }
+
+    const socket = new WebSocket(
+        `ws://127.0.0.1:8000/ws/inbox/${userId}/?token=${token}`
+    );
+
+    return socket;
+};
