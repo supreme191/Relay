@@ -7,39 +7,22 @@ import { Link } from "react-router-dom";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Format a timestamp for the sidebar.
- * Same calendar day ? HH:MM
- * Any earlier day   ? MMM D  (e.g. "Oct 3")
- */
 const formatTimestamp = (isoString) => {
     if (!isoString) return "";
-
     const date = new Date(isoString);
     const now = new Date();
-
     const isSameDay =
         date.getFullYear() === now.getFullYear() &&
         date.getMonth() === now.getMonth() &&
         date.getDate() === now.getDate();
-
     if (isSameDay) {
-        return date.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-        });
+        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
-
-    return date.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-    });
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 };
 
-/** Numeric unread badge, capped at 99+. */
 const UnreadBadge = ({ count }) => {
     if (!count || count <= 0) return null;
-
     return (
         <span className="ml-1 flex-shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white">
             {count > 99 ? "99+" : count}
@@ -52,12 +35,15 @@ const UnreadBadge = ({ count }) => {
 // ---------------------------------------------------------------------------
 
 const Sidebar = ({
-    conversations,   // [{ key, other_user_id, other_user, latest_message, timestamp, unread_count }]
+    conversations,
     inboxLoading,
     inboxError,
     selectedUser,
     onSelectUser,
     wsDisconnected,
+    // Incoming request props
+    incomingRequests = [],   // [{ id, sender_id, sender_profile, request_message }]
+    onRequestResolved,       // (relationshipId) => void — called after accept/block
 }) => {
     const { user, accessToken, logout } = useAuth();
 
@@ -65,8 +51,9 @@ const Sidebar = ({
     const [search, setSearch] = useState("");
     const [searching, setSearching] = useState(false);
     const [profile, setProfile] = useState(null);
+    // Whether the Chat Requests drawer is open
+    const [requestsOpen, setRequestsOpen] = useState(false);
 
-    // Fetch own profile for the footer card
     useEffect(() => {
         const fetchProfile = async () => {
             if (!user || !accessToken) return;
@@ -80,7 +67,6 @@ const Sidebar = ({
         fetchProfile();
     }, [user, accessToken]);
 
-    // Debounced user search
     useEffect(() => {
         const run = async () => {
             if (!search.trim() || !accessToken) {
@@ -101,7 +87,6 @@ const Sidebar = ({
                 setSearching(false);
             }
         };
-
         const id = setTimeout(run, 300);
         return () => clearTimeout(id);
     }, [search, accessToken]);
@@ -110,9 +95,19 @@ const Sidebar = ({
         onSelectUser(profileData);
         setSearch("");
         setSearchResults([]);
+        setRequestsOpen(false);
     };
 
-    // String ID of the currently open conversation partner
+    const handleSelectRequest = (req) => {
+        // Navigate to that sender's profile in the main panel.
+        // ChatRequestPanel will render because the relationship is pending.
+        if (req.sender_profile) {
+            onSelectUser(req.sender_profile);
+            setRequestsOpen(false);
+        }
+    };
+
+    const pendingCount = incomingRequests.length;
     const selectedUserId = selectedUser ? String(selectedUser.user.id) : null;
 
     return (
@@ -130,10 +125,108 @@ const Sidebar = ({
                 </button>
             </div>
 
-            {/* Real-time disconnection banner */}
+            {/* Disconnection banner */}
             {wsDisconnected && (
                 <div className="bg-yellow-50 border-b border-yellow-200 px-4 py-2 text-xs text-yellow-700">
                     Real-time updates unavailable. Refresh to reconnect.
+                </div>
+            )}
+
+            {/* ---- Chat Requests section ---- */}
+            <button
+                type="button"
+                onClick={() => setRequestsOpen((v) => !v)}
+                className={`flex items-center justify-between px-5 py-3 border-b border-gray-200 w-full text-left transition hover:bg-gray-50 ${
+                    requestsOpen ? "bg-gray-50" : ""
+                }`}
+            >
+                <div className="flex items-center gap-2">
+                    {/* Bell icon */}
+                    <svg
+                        className={`w-4 h-4 flex-shrink-0 ${pendingCount > 0 ? "text-blue-600" : "text-gray-400"}`}
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                    >
+                        <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+                        />
+                    </svg>
+                    <span
+                        className={`text-sm font-medium ${
+                            pendingCount > 0 ? "text-gray-900" : "text-gray-500"
+                        }`}
+                    >
+                        Chat Requests
+                    </span>
+                    {pendingCount > 0 && (
+                        <span className="flex-shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white">
+                            {pendingCount > 99 ? "99+" : pendingCount}
+                        </span>
+                    )}
+                </div>
+                {/* Chevron */}
+                <svg
+                    className={`w-4 h-4 text-gray-400 transition-transform ${requestsOpen ? "rotate-180" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+
+            {/* ---- Pending requests list (drawer) ---- */}
+            {requestsOpen && (
+                <div className="border-b border-gray-200 bg-gray-50 max-h-64 overflow-y-auto">
+                    {pendingCount === 0 && (
+                        <p className="px-5 py-4 text-sm text-gray-400">
+                            No pending requests.
+                        </p>
+                    )}
+                    {incomingRequests.map((req) => {
+                        const senderName =
+                            req.sender_profile?.full_name ||
+                            req.sender_profile?.user?.username ||
+                            "Unknown";
+                        const initial = senderName.charAt(0).toUpperCase();
+                        const isSelected =
+                            selectedUserId &&
+                            String(req.sender_id) === selectedUserId;
+
+                        return (
+                            <div
+                                key={req.id}
+                                onClick={() => handleSelectRequest(req)}
+                                className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition ${
+                                    isSelected
+                                        ? "bg-blue-50"
+                                        : "hover:bg-white"
+                                }`}
+                            >
+                                {/* Avatar */}
+                                <div className="w-9 h-9 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold flex-shrink-0 mt-0.5">
+                                    {initial}
+                                </div>
+
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-semibold text-gray-900 truncate">
+                                        {senderName}
+                                    </p>
+                                    <p className="text-xs text-gray-500 truncate">
+                                        {req.request_message || "Sent you a chat request"}
+                                    </p>
+                                </div>
+
+                                {/* "New" dot */}
+                                <span className="mt-1.5 w-2 h-2 rounded-full bg-blue-500 flex-shrink-0" />
+                            </div>
+                        );
+                    })}
                 </div>
             )}
 
@@ -196,26 +289,26 @@ const Sidebar = ({
                     !inboxError &&
                     conversations.map((convo) => {
                         const otherUser = convo.other_user;
-                        // convo.key === String(other_user_id); compare as strings
                         const isActive = convo.key === selectedUserId;
                         const hasUnread = convo.unread_count > 0;
 
                         return (
                             <div
                                 key={convo.key}
-                                onClick={() => onSelectUser(otherUser)}
+                                onClick={() => {
+                                    onSelectUser(otherUser);
+                                    setRequestsOpen(false);
+                                }}
                                 className={`px-4 py-3 flex items-center gap-3 cursor-pointer transition ${
                                     isActive
                                         ? "bg-blue-50 border-l-4 border-blue-500"
                                         : "hover:bg-gray-50 border-l-4 border-transparent"
                                 }`}
                             >
-                                {/* Avatar */}
                                 <div className="w-11 h-11 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold flex-shrink-0">
                                     {otherUser?.full_name?.charAt(0)?.toUpperCase() || "U"}
                                 </div>
 
-                                {/* Name + message preview */}
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-1">
                                         <h2
@@ -234,7 +327,6 @@ const Sidebar = ({
                                     </p>
                                 </div>
 
-                                {/* Timestamp */}
                                 <span className="text-xs text-gray-400 flex-shrink-0">
                                     {formatTimestamp(convo.timestamp)}
                                 </span>

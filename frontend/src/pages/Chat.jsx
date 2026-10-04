@@ -4,11 +4,17 @@ import Sidebar from "../components/chat/Sidebar";
 import ChatHeader from "../components/chat/ChatHeader";
 import MessageList from "../components/chat/MessageList";
 import MessageInput from "../components/chat/MessageInput";
+import ChatRequestPanel from "../components/chat/ChatRequestPanel";
 
 import { useAuth } from "../context/AuthContext";
 
 import { createChatSocket, createInboxSocket } from "../services/websocketService";
-import { getInbox, markAsRead } from "../services/chatService";
+import {
+    getInbox,
+    markAsRead,
+    getRelationshipStatus,
+    getIncomingRequests,
+} from "../services/chatService";
 
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 3000;
@@ -16,34 +22,33 @@ const RECONNECT_DELAY_MS = 3000;
 const Chat = () => {
     const { user, accessToken } = useAuth();
 
-    // -----------------------------------------------------------------------
-    // Chat (room) WebSocket
-    // -----------------------------------------------------------------------
+    // ---- Chat (room) WebSocket ----
     const socketRef = useRef(null);
 
     const [selectedUser, setSelectedUser] = useState(null);
     const [newMessage, setNewMessage] = useState(null);
-    // messageRefresh kept for compatibility with MessageList
     const [messageRefresh] = useState(0);
 
-    // -----------------------------------------------------------------------
-    // Inbox state � owned here, shared down to Sidebar
-    // -----------------------------------------------------------------------
+    // ---- Relationship state for the currently selected conversation ----
+    const [relationship, setRelationship] = useState(null);
+
+    // ---- Inbox state ----
     const [conversations, setConversations] = useState([]);
     const [inboxLoading, setInboxLoading] = useState(true);
     const [inboxError, setInboxError] = useState("");
     const [wsDisconnected, setWsDisconnected] = useState(false);
 
-    // -----------------------------------------------------------------------
-    // Inbox WebSocket refs
-    // -----------------------------------------------------------------------
+    // ---- Pending incoming chat requests ----
+    // Each entry is a Relationship object (from the backend) enriched with
+    // sender_profile from the WS event or derived from the REST response.
+    const [incomingRequests, setIncomingRequests] = useState([]);
+
+    // ---- Inbox WebSocket refs ----
     const inboxSocketRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
     const reconnectTimerRef = useRef(null);
-
-    // Keep a ref to the currently selected user's ID so the WS message
-    // handler can read the latest value without a stale closure.
     const selectedUserIdRef = useRef(null);
+
     useEffect(() => {
         selectedUserIdRef.current = selectedUser
             ? String(selectedUser.user.id)
@@ -51,65 +56,165 @@ const Chat = () => {
     }, [selectedUser]);
 
     // -----------------------------------------------------------------------
-    // Apply an inbox_update payload from the WebSocket.
-    //
-    // Conversations are keyed by String(other_user_id) � the explicit field
-    // the backend now includes in every event.  This eliminates any ambiguity
-    // from inferring the other participant out of sender/receiver fields.
-    //
-    // unread_count is SET from the DB-authoritative value in the payload;
-    // it is NEVER incremented locally.
+    // Incoming request helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * Add a request to the incomingRequests list, deduplicating by id.
+     * Used both from the REST init fetch and the WS chat_request event.
+     * Each request entry shape:
+     *   { id, sender_profile, request_message, ... }
+     * where sender_profile is a Profile object.
+     */
+    const addIncomingRequest = useCallback((req) => {
+        setIncomingRequests((prev) => {
+            const exists = prev.some((r) => r.id === req.id);
+            if (exists) return prev;
+            return [req, ...prev];
+        });
+    }, []);
+
+    /**
+     * Remove a request by relationship id.
+     * Called on accept, block, or when the relationship is otherwise resolved.
+     */
+    const removeIncomingRequest = useCallback((relationshipId) => {
+        setIncomingRequests((prev) => prev.filter((r) => r.id !== relationshipId));
+    }, []);
+
+    // -----------------------------------------------------------------------
+    // Inbox update helpers
+    // -----------------------------------------------------------------------
+
     const applyInboxUpdate = useCallback((payload) => {
-        const {
-            other_user_id,
-            other_user,
-            latest_message,
-            timestamp,
-            unread_count,
-        } = payload;
-
+        const { other_user_id, other_user, latest_message, timestamp, unread_count } = payload;
         const key = String(other_user_id);
-
-        // If this is the currently open conversation, the user is actively
-        // reading it � keep the badge at 0 regardless of the DB count.
-        const effectiveUnread =
-            key === selectedUserIdRef.current ? 0 : unread_count;
+        const effectiveUnread = key === selectedUserIdRef.current ? 0 : unread_count;
 
         setConversations((prev) => {
             const idx = prev.findIndex((c) => c.key === key);
-
             const updated = {
-                key,                          // stable conversation identity
-                other_user_id: other_user_id, // numeric, for markAsRead call
-                other_user,                   // profile for display
+                key,
+                other_user_id,
+                other_user,
                 latest_message,
                 timestamp,
-                unread_count: effectiveUnread, // SET, never added to
+                unread_count: effectiveUnread,
             };
-
-            if (idx === -1) {
-                // Brand-new conversation: prepend
-                return [updated, ...prev];
-            }
-
-            // Existing conversation: update in place and float to top
+            if (idx === -1) return [updated, ...prev];
             const next = prev.filter((_, i) => i !== idx);
             return [updated, ...next];
         });
-    }, []); // no deps � reads only refs and the stable setter
+    }, []);
 
     // -----------------------------------------------------------------------
-    // Open (or reopen) the inbox WebSocket
+    // Handle incoming WebSocket events on the inbox socket
     // -----------------------------------------------------------------------
+
+    const handleInboxEvent = useCallback((payload) => {
+        switch (payload.type) {
+            case "inbox_update":
+                applyInboxUpdate(payload);
+                break;
+
+            case "chat_request": {
+                // Add to the global pending request list (deduped by id).
+                // sender_profile comes directly from the WS payload.
+                addIncomingRequest({
+                    id: payload.request_id,
+                    sender_profile: payload.sender_profile,
+                    request_message: payload.message,
+                    sender_id: payload.sender_id,
+                });
+
+                // If the sender happens to be the currently selected user,
+                // also update the per-conversation relationship state.
+                if (
+                    selectedUserIdRef.current &&
+                    String(payload.sender_id) === selectedUserIdRef.current
+                ) {
+                    setRelationship((prev) => ({
+                        ...(prev || {}),
+                        id: payload.request_id,
+                        status: "pending",
+                        i_am_requester: false,
+                        i_am_blocked_by: false,
+                        i_am_blocker: false,
+                        request_message: payload.message,
+                        requested_by: { id: payload.sender_id },
+                    }));
+                }
+                break;
+            }
+
+            case "chat_request_accepted":
+                // My outgoing request was accepted — no change to incomingRequests.
+                if (
+                    selectedUserIdRef.current &&
+                    String(payload.accepted_by_id) === selectedUserIdRef.current
+                ) {
+                    setRelationship((prev) => ({
+                        ...(prev || {}),
+                        status: "accepted",
+                        i_am_requester: true,
+                        i_am_blocked_by: false,
+                        i_am_blocker: false,
+                    }));
+                }
+                break;
+
+            case "chat_request_blocked":
+                // I was blocked. Update relationship if this is the selected user.
+                if (
+                    selectedUserIdRef.current &&
+                    String(payload.blocked_by_id) === selectedUserIdRef.current
+                ) {
+                    setRelationship((prev) => ({
+                        ...(prev || {}),
+                        status: "blocked",
+                        i_am_requester: false,
+                        i_am_blocked_by: true,
+                        i_am_blocker: false,
+                    }));
+                }
+                break;
+
+            case "chat_unblocked":
+                // The unblocked user (me) is notified. unblocked_by_id is the
+                // blocker's ID — i.e. the other person in the conversation.
+                // Update if the currently selected user is the one who unblocked us.
+                // Use a clean { status: "none" } object without spreading prev so
+                // no stale i_am_blocked_by / i_am_blocker flags carry over.
+                if (
+                    selectedUserIdRef.current &&
+                    String(payload.unblocked_by_id) === selectedUserIdRef.current
+                ) {
+                    setRelationship({
+                        status: "none",
+                        other_user_id: payload.unblocked_by_id,
+                        i_am_requester: false,
+                        i_am_blocked_by: false,
+                        i_am_blocker: false,
+                    });
+                }
+                break;
+
+            default:
+                break;
+        }
+    }, [applyInboxUpdate, addIncomingRequest]);
+
+    // -----------------------------------------------------------------------
+    // Inbox WebSocket lifecycle
+    // -----------------------------------------------------------------------
+
     const connectInboxSocket = useCallback(() => {
         if (!user || !accessToken) return;
-
         if (
             inboxSocketRef.current &&
             inboxSocketRef.current.readyState === WebSocket.OPEN
         ) {
-            return; // already open � do not open a second socket
+            return;
         }
 
         let socket;
@@ -123,7 +228,6 @@ const Chat = () => {
         inboxSocketRef.current = socket;
 
         socket.onopen = () => {
-            console.log("Inbox WebSocket connected");
             reconnectAttemptsRef.current = 0;
             setWsDisconnected(false);
         };
@@ -131,9 +235,7 @@ const Chat = () => {
         socket.onmessage = (event) => {
             try {
                 const payload = JSON.parse(event.data);
-                if (payload.type === "inbox_update") {
-                    applyInboxUpdate(payload);
-                }
+                handleInboxEvent(payload);
             } catch (err) {
                 console.error("Inbox WS parse error:", err);
             }
@@ -144,24 +246,21 @@ const Chat = () => {
         };
 
         socket.onclose = () => {
-            console.log("Inbox WebSocket closed");
             inboxSocketRef.current = null;
-
             if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttemptsRef.current += 1;
-                reconnectTimerRef.current = setTimeout(() => {
-                    connectInboxSocket();
-                }, RECONNECT_DELAY_MS);
+                reconnectTimerRef.current = setTimeout(connectInboxSocket, RECONNECT_DELAY_MS);
             } else {
                 setWsDisconnected(true);
             }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user, accessToken, applyInboxUpdate]);
+    }, [user, accessToken, handleInboxEvent]);
 
     // -----------------------------------------------------------------------
-    // On mount: fetch initial inbox + open inbox WebSocket
+    // Mount: fetch inbox + incoming requests + open inbox WS
     // -----------------------------------------------------------------------
+
     useEffect(() => {
         if (!user || !accessToken) return;
 
@@ -170,21 +269,13 @@ const Chat = () => {
                 setInboxLoading(true);
                 setInboxError("");
                 const data = await getInbox(user.user_id);
-
-                // Normalise REST response to the same shape used by applyInboxUpdate.
-                //
-                // The REST endpoint now includes `other_user_id` (explicit) so we
-                // never have to guess which side of sender/reciever is "the other".
                 const normalised = data.map((item) => {
-                    const otherUserId = item.other_user_id; // explicit from backend
+                    const otherUserId = item.other_user_id;
                     const key = String(otherUserId);
-
-                    // Pick the profile that belongs to the other participant.
                     const otherUser =
                         String(item.sender.id) === String(user.user_id)
                             ? item.reciever_profile
                             : item.sender_profile;
-
                     return {
                         key,
                         other_user_id: otherUserId,
@@ -194,7 +285,6 @@ const Chat = () => {
                         unread_count: item.unread_count ?? 0,
                     };
                 });
-
                 setConversations(normalised);
             } catch (err) {
                 console.error("Failed to load inbox:", err);
@@ -204,16 +294,32 @@ const Chat = () => {
             }
         };
 
+        const fetchIncomingRequests = async () => {
+            try {
+                const data = await getIncomingRequests();
+                // The backend now includes sender_profile (ProfileSerializer) in
+                // each IncomingRequests response item — same shape as the WS event.
+                const normalised = data.map((rel) => ({
+                    id: rel.id,
+                    sender_id: rel.requested_by?.id,
+                    sender_profile: rel.sender_profile,   // ProfileSerializer shape
+                    request_message: rel.request_message,
+                    _rel: rel,  // full relationship object for ChatRequestPanel
+                }));
+                setIncomingRequests(normalised);
+            } catch (err) {
+                console.error("Failed to load incoming requests:", err);
+            }
+        };
+
         fetchInbox();
+        fetchIncomingRequests();
         connectInboxSocket();
 
         return () => {
-            // Stop any pending reconnect timers
             clearTimeout(reconnectTimerRef.current);
-            // Cap retries so the onclose handler doesn't schedule another attempt
             reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS;
             if (inboxSocketRef.current) {
-                // Remove the onclose handler before closing intentionally
                 inboxSocketRef.current.onclose = null;
                 inboxSocketRef.current.close();
                 inboxSocketRef.current = null;
@@ -222,46 +328,90 @@ const Chat = () => {
     }, [user, accessToken, connectInboxSocket]);
 
     // -----------------------------------------------------------------------
-    // Conversation selection: optimistic unread clear + mark-as-read API call
+    // Conversation selection: fetch relationship + mark as read
     // -----------------------------------------------------------------------
+
     const handleSelectUser = useCallback(
         async (otherUserProfile) => {
             const incomingId = String(otherUserProfile.user.id);
-
-            // Skip if already selected
-            if (selectedUser && String(selectedUser.user.id) === incomingId) {
-                return;
-            }
+            if (selectedUser && String(selectedUser.user.id) === incomingId) return;
 
             setSelectedUser(otherUserProfile);
+            setRelationship(null);
 
-            // Optimistically zero the badge immediately (good UX)
             setConversations((prev) =>
                 prev.map((c) =>
                     c.key === incomingId ? { ...c, unread_count: 0 } : c
                 )
             );
 
-            // Persist to DB (fire-and-forget; badge stays 0 on success,
-            // the next inbox_update will resync on failure)
+            try {
+                const rel = await getRelationshipStatus(otherUserProfile.user.id);
+                setRelationship(rel);
+            } catch (err) {
+                console.error("Failed to fetch relationship:", err);
+                setRelationship({ status: "none" });
+            }
+
             try {
                 await markAsRead(otherUserProfile.user.id);
-            } catch (err) {
-                console.error("Failed to mark messages as read:", err);
+            } catch (_) {
+                // silently ignore
             }
         },
         [selectedUser]
     );
 
     // -----------------------------------------------------------------------
-    // Chat (room) WebSocket � reconnect when selected conversation changes
+    // Called by Sidebar when a pending request is accepted or blocked,
+    // so we can remove it from the notification list.
     // -----------------------------------------------------------------------
+
+    const handleRequestResolved = useCallback((relationshipId) => {
+        removeIncomingRequest(relationshipId);
+    }, [removeIncomingRequest]);
+
+    // -----------------------------------------------------------------------
+    // onRelChange passed to ChatRequestPanel — also removes the request from
+    // the notification list when it transitions out of PENDING.
+    // -----------------------------------------------------------------------
+
+    const handleRelChange = useCallback((newRel) => {
+        // ChatRequestPanel.handleUnblock calls onRelChange(null) to signal NONE.
+        // null would make showRequestPanel false (blank screen). Normalise to an
+        // explicit { status: "none" } object so ChatRequestPanel renders correctly
+        // for BOTH the blocker and the unblocked user after an unblock.
+        const normalised = newRel === null ? { status: "none" } : newRel;
+        setRelationship(normalised);
+
+        // Remove from the pending incoming request list whenever a request
+        // transitions out of PENDING (accepted, blocked, or unblocked/none).
+        if (!newRel || newRel.status === "accepted" || newRel.status === "blocked" || newRel.i_am_blocker) {
+            // newRel.id is present for accepted/blocked; for null (unblock from NONE)
+            // there is no id to remove, but that means it was never pending anyway.
+            if (newRel?.id) removeIncomingRequest(newRel.id);
+        }
+        if (newRel?.status === "accepted") {
+            setNewMessage(null);
+        }
+    }, [removeIncomingRequest]);
+
+    // -----------------------------------------------------------------------
+    // Chat (room) WebSocket — only open when relationship is accepted
+    // -----------------------------------------------------------------------
+
     useEffect(() => {
         if (!selectedUser || !user) return;
+        if (relationship?.status !== "accepted") {
+            if (socketRef.current) {
+                socketRef.current.close();
+                socketRef.current = null;
+            }
+            return;
+        }
 
         const currentUserId = user.user_id;
         const selectedUserId = selectedUser.user.id;
-
         const roomName = [currentUserId, selectedUserId]
             .sort((a, b) => a - b)
             .join("_");
@@ -278,25 +428,33 @@ const Chat = () => {
             if (data.type === "message") {
                 setNewMessage(data.message);
             }
+            if (data.type === "error") {
+                console.warn("Chat WS error from server:", data.detail);
+            }
         };
 
-        socket.onerror = (error) => {
-            console.error("Chat WebSocket error:", error);
-        };
-
-        socket.onclose = () => {
-            console.log("Chat WebSocket disconnected");
-        };
+        socket.onerror = (error) => console.error("Chat WebSocket error:", error);
+        socket.onclose = () => console.log("Chat WebSocket disconnected");
 
         return () => {
             socket.close();
             socketRef.current = null;
         };
-    }, [selectedUser, user]);
+    }, [selectedUser, user, relationship]);
+
+    // -----------------------------------------------------------------------
+    // Derived flags
+    // -----------------------------------------------------------------------
+
+    const relStatus = relationship?.status ?? null;
+    const isAccepted = relStatus === "accepted";
+    const iAmBlockedBy = relationship?.i_am_blocked_by ?? false;
+    const showRequestPanel = relationship !== null && !isAccepted;
 
     // -----------------------------------------------------------------------
     // Render
     // -----------------------------------------------------------------------
+
     return (
         <div className="h-screen bg-gray-100 flex">
 
@@ -307,22 +465,44 @@ const Chat = () => {
                 selectedUser={selectedUser}
                 onSelectUser={handleSelectUser}
                 wsDisconnected={wsDisconnected}
+                incomingRequests={incomingRequests}
+                onRequestResolved={handleRequestResolved}
             />
 
             <main className="flex-1 flex flex-col">
 
                 <ChatHeader selectedUser={selectedUser} />
 
-                <MessageList
-                    selectedUser={selectedUser}
-                    messageRefresh={messageRefresh}
-                    newMessage={newMessage}
-                />
+                {!selectedUser && (
+                    <div className="flex-1 flex items-center justify-center">
+                        <p className="text-gray-400">Select a conversation to start chatting.</p>
+                    </div>
+                )}
 
-                <MessageInput
-                    selectedUser={selectedUser}
-                    socketRef={socketRef}
-                />
+                {selectedUser && showRequestPanel && (
+                    <ChatRequestPanel
+                        relationship={relationship}
+                        otherUser={selectedUser}
+                        onRelChange={handleRelChange}
+                    />
+                )}
+
+                {selectedUser && isAccepted && (
+                    <MessageList
+                        selectedUser={selectedUser}
+                        messageRefresh={messageRefresh}
+                        newMessage={newMessage}
+                    />
+                )}
+
+                {selectedUser && isAccepted && (
+                    <MessageInput
+                        selectedUser={selectedUser}
+                        socketRef={socketRef}
+                        relationshipStatus={relStatus}
+                        blockedByOther={iAmBlockedBy}
+                    />
+                )}
 
             </main>
 

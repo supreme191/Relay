@@ -4,21 +4,21 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 
+from django.db import transaction
 from django.db.models import Q
 
-from api.models import ChatMessage, Profile, User
+from api.models import ChatMessage, Profile, User, Relationship
 from api.serializers import MessageSerializer, ProfileSerializer
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# DB helpers
 # ---------------------------------------------------------------------------
 
 @database_sync_to_async
 def _get_user_by_id(user_id):
-    """Return a User instance or None."""
     try:
         return User.objects.get(id=user_id)
     except User.DoesNotExist:
@@ -26,13 +26,34 @@ def _get_user_by_id(user_id):
 
 
 @database_sync_to_async
+def _check_message_allowed_async(sender_id, receiver_id):
+    """
+    Returns None if messaging is allowed, or an error string.
+    Relationship must be ACCEPTED; BLOCKED or PENDING => error.
+    """
+    try:
+        sender = User.objects.get(id=sender_id)
+        receiver = User.objects.get(id=receiver_id)
+    except User.DoesNotExist:
+        return "User not found."
+
+    rel = Relationship.get_for_users(sender, receiver)
+    if rel is None:
+        return "You must be connected to send messages."
+    if rel.status == Relationship.STATUS_PENDING:
+        return "Chat request has not been accepted yet."
+    if rel.status == Relationship.STATUS_BLOCKED:
+        if rel.blocked_by_id == receiver.id:
+            return "You have been blocked by this user."
+        return "You have blocked this user. Unblock to send messages."
+    return None
+
+
+@database_sync_to_async
 def _create_message(sender, receiver, message):
     """
-    Persist a ChatMessage and return its serialized form.
-
-    sender   - User instance from scope["user"]  (authoritative)
-    receiver - User instance validated before calling this
-    message  - str
+    Persist a ChatMessage.
+    sender/receiver are User instances from authenticated scope.
     """
     chat_message = ChatMessage.objects.create(
         sender=sender,
@@ -45,21 +66,11 @@ def _create_message(sender, receiver, message):
 @database_sync_to_async
 def _build_inbox_entry(current_user_id, other_user_id):
     """
-    Build a sidebar Inbox_Entry tailored to current_user_id's perspective.
-
-    Payload fields:
-      type            "inbox_update"
-      other_user_id   int  - the conversation partner's user PK (explicit)
-      other_user      ProfileSerializer data for the conversation partner
-      latest_message  str  - up to 200 chars of the latest message body
-      timestamp       str  - ISO-8601 datetime of the latest message
-      unread_count    int  - COUNT(msg where sender=other, reciever=current,
-                             is_read=False); always 0 for the sender's event
+    Build a sidebar Inbox_Entry tailored to current_user_id.
+    Returns None if no messages exist yet.
     """
     try:
-        other_profile = Profile.objects.select_related("user").get(
-            user_id=other_user_id
-        )
+        other_profile = Profile.objects.select_related("user").get(user_id=other_user_id)
     except Profile.DoesNotExist:
         return None
 
@@ -91,8 +102,62 @@ def _build_inbox_entry(current_user_id, other_user_id):
     }
 
 
+@database_sync_to_async
+def _build_request_event(relationship_id, for_user_id):
+    """
+    Build a chat_request event payload for the recipient of a request.
+    for_user_id is the recipient's user ID.
+    """
+    try:
+        rel = Relationship.objects.select_related(
+            "requested_by", "user_a", "user_b"
+        ).get(id=relationship_id)
+    except Relationship.DoesNotExist:
+        return None
+
+    sender = rel.requested_by
+    try:
+        sender_profile = Profile.objects.select_related("user").get(user=sender)
+        sender_profile_data = ProfileSerializer(sender_profile).data
+    except Profile.DoesNotExist:
+        sender_profile_data = None
+
+    return {
+        "type": "chat_request",
+        "request_id": rel.id,
+        "sender_id": sender.id,
+        "sender_profile": sender_profile_data,
+        "message": rel.request_message,
+    }
+
+
+@database_sync_to_async
+def _build_request_accepted_event(relationship_id, accepted_by_id):
+    """
+    Build a chat_request_accepted event for the original requester.
+    """
+    try:
+        rel = Relationship.objects.select_related("user_a", "user_b", "requested_by").get(id=relationship_id)
+    except Relationship.DoesNotExist:
+        return None
+
+    accepter_id = accepted_by_id
+    try:
+        accepter_profile = Profile.objects.select_related("user").get(user_id=accepter_id)
+        accepter_profile_data = ProfileSerializer(accepter_profile).data
+    except Profile.DoesNotExist:
+        accepter_profile_data = None
+
+    return {
+        "type": "chat_request_accepted",
+        "request_id": rel.id,
+        "accepted_by_id": accepter_id,
+        "accepted_by_profile": accepter_profile_data,
+    }
+
+
 # ---------------------------------------------------------------------------
-# ChatConsumer
+# ChatConsumer  (existing, with relationship auth added to receive)
 # ---------------------------------------------------------------------------
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -107,72 +172,61 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.room_name = self.scope["url_route"]["kwargs"]["room_name"]
         self.room_group_name = self.room_name
 
-        # Parse the two participant IDs out of the room name.
-        # Room format: "chat_<id_a>_<id_b>" where id_a < id_b.
-        # We store them so receive() can verify the receiver is a room member.
+        # Parse participant IDs from room name: "chat_<id_a>_<id_b>"
         try:
             _, id_a, id_b = self.room_name.split("_")
             self.room_user_ids = {int(id_a), int(id_b)}
         except (ValueError, AttributeError):
             self.room_user_ids = set()
 
-        # Verify the connecting user is actually one of the room participants
         if self.room_user_ids and user.id not in self.room_user_ids:
             await self.close()
             return
 
-        await self.channel_layer.group_add(
-            self.room_group_name,
-            self.channel_name,
-        )
-
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
-        await self.send(
-            text_data=json.dumps({
-                "type": "connection",
-                "message": f"Connected to {self.room_name}",
-                "user_id": user.id,
-            })
-        )
+        await self.send(text_data=json.dumps({
+            "type": "connection",
+            "message": f"Connected to {self.room_name}",
+            "user_id": user.id,
+        }))
 
     async def receive(self, text_data):
         data = json.loads(text_data)
-
         message_text = data.get("message", "").strip()
         receiver_id_raw = data.get("receiver")
 
-        # --- Sender: ALWAYS from the authenticated WebSocket user ---
+        # Sender ALWAYS from authenticated WebSocket user
         sender = self.scope["user"]
 
-        # Validate message content
         if not message_text:
             return
 
-        # Validate receiver_id is present and numeric
         try:
             receiver_id = int(receiver_id_raw)
         except (TypeError, ValueError):
-            logger.warning("ChatConsumer.receive: invalid receiver_id %r from user %s", receiver_id_raw, sender.id)
+            logger.warning("ChatConsumer: invalid receiver_id %r from user %s", receiver_id_raw, sender.id)
             return
 
-        # Reject self-send
         if receiver_id == sender.id:
-            logger.warning("ChatConsumer.receive: self-send rejected for user %s", sender.id)
+            logger.warning("ChatConsumer: self-send rejected for user %s", sender.id)
             return
 
-        # Verify receiver is the OTHER participant in this room
         if self.room_user_ids and receiver_id not in self.room_user_ids:
-            logger.warning(
-                "ChatConsumer.receive: receiver %s is not a member of room %s (user %s)",
-                receiver_id, self.room_name, sender.id
-            )
+            logger.warning("ChatConsumer: receiver %s not in room %s", receiver_id, self.room_name)
             return
 
-        # Fetch receiver User object
+        # Relationship authorization - must be ACCEPTED
+        error = await _check_message_allowed_async(sender.id, receiver_id)
+        if error:
+            await self.send(text_data=json.dumps({"type": "error", "detail": error}))
+            logger.warning("ChatConsumer: message blocked for user %s -> %s: %s", sender.id, receiver_id, error)
+            return
+
         receiver = await _get_user_by_id(receiver_id)
         if receiver is None:
-            logger.warning("ChatConsumer.receive: receiver %s not found", receiver_id)
+            logger.warning("ChatConsumer: receiver %s not found", receiver_id)
             return
 
         logger.info(
@@ -180,40 +234,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             sender.id, sender.username, receiver.id, receiver.username, self.room_name
         )
 
-        # Persist - sender comes from scope["user"], never from the payload
         chat_message = await _create_message(sender, receiver, message_text)
 
-        # Deliver to chat room (existing behaviour - unchanged)
         await self.channel_layer.group_send(
             self.room_group_name,
-            {
-                "type": "chat_message",
-                "message": chat_message,
-            }
+            {"type": "chat_message", "message": chat_message},
         )
 
-        # Push sidebar-only inbox_update to both participants
         await self._notify_inbox(sender.id, receiver.id)
 
     async def chat_message(self, event):
-        await self.send(
-            text_data=json.dumps({
-                "type": "message",
-                "message": event["message"],
-            })
-        )
+        await self.send(text_data=json.dumps({
+            "type": "message",
+            "message": event["message"],
+        }))
 
     async def _notify_inbox(self, sender_id, receiver_id):
-        """
-        Send a tailored inbox_update to each participant's inbox group.
-
-        sender   -> current_user_id=sender_id,   other_user_id=receiver_id
-        receiver -> current_user_id=receiver_id, other_user_id=sender_id
-        """
-        for current_id, other_id in [
-            (sender_id, receiver_id),
-            (receiver_id, sender_id),
-        ]:
+        for current_id, other_id in [(sender_id, receiver_id), (receiver_id, sender_id)]:
             try:
                 entry = await _build_inbox_entry(current_id, other_id)
                 if entry is None:
@@ -223,22 +260,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     {"type": "inbox_update", "payload": entry},
                 )
             except Exception as exc:
-                logger.error(
-                    "Failed to send inbox_update to inbox_%s: %s",
-                    current_id,
-                    exc,
-                )
+                logger.error("Failed to send inbox_update to inbox_%s: %s", current_id, exc)
 
     async def disconnect(self, close_code):
         if hasattr(self, "room_group_name"):
-            await self.channel_layer.group_discard(
-                self.room_group_name,
-                self.channel_name,
-            )
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
 
 # ---------------------------------------------------------------------------
-# InboxConsumer  (user-level private notification channel)
+# InboxConsumer  (extended with request event handlers)
 # ---------------------------------------------------------------------------
 
 class InboxConsumer(AsyncWebsocketConsumer):
@@ -262,21 +292,31 @@ class InboxConsumer(AsyncWebsocketConsumer):
             return
 
         self.inbox_group_name = f"inbox_{user.id}"
-
-        await self.channel_layer.group_add(
-            self.inbox_group_name,
-            self.channel_name,
-        )
-
+        await self.channel_layer.group_add(self.inbox_group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
         if hasattr(self, "inbox_group_name"):
-            await self.channel_layer.group_discard(
-                self.inbox_group_name,
-                self.channel_name,
-            )
+            await self.channel_layer.group_discard(self.inbox_group_name, self.channel_name)
+
+    # ----- channel-layer event handlers -----
 
     async def inbox_update(self, event):
-        """Forward the tailored inbox payload to the WebSocket client."""
+        """Normal inbox sidebar update."""
+        await self.send(text_data=json.dumps(event["payload"]))
+
+    async def chat_request(self, event):
+        """New chat request received by this user."""
+        await self.send(text_data=json.dumps(event["payload"]))
+
+    async def chat_request_accepted(self, event):
+        """Requester is notified that their request was accepted."""
+        await self.send(text_data=json.dumps(event["payload"]))
+
+    async def chat_request_blocked(self, event):
+        """Requester/other user is notified of a block."""
+        await self.send(text_data=json.dumps(event["payload"]))
+
+    async def chat_unblocked(self, event):
+        """Previously blocked user is notified of unblock."""
         await self.send(text_data=json.dumps(event["payload"]))
