@@ -1,5 +1,5 @@
 ﻿from django.contrib import admin
-from api.models import User, Profile, ChatMessage, Relationship
+from api.models import User, Profile, ChatMessage, Relationship, ConversationState
 
 
 class UserAdmin(admin.ModelAdmin):
@@ -22,7 +22,13 @@ class RelationshipAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
 
 
+class ConversationStateAdmin(admin.ModelAdmin):
+    list_display = ['user_a', 'user_b', 'chat_deleted_by_a', 'chat_deleted_by_b', 'sidebar_hidden_by_a', 'sidebar_hidden_by_b']
+    readonly_fields = ['created_at', 'updated_at']
+
+
 admin.site.register(User, UserAdmin)
 admin.site.register(Profile, ProfileAdmin)
 admin.site.register(ChatMessage, ChatMessageAdmin)
 admin.site.register(Relationship, RelationshipAdmin)
+admin.site.register(ConversationState, ConversationStateAdmin)

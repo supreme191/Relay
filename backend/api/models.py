@@ -74,16 +74,7 @@ class ChatMessage(models.Model):
 class Relationship(models.Model):
     """
     One record per unordered user pair.
-    user_a.id < user_b.id is enforced at both the application layer
-    (canonical_pair helper) and the database layer (CheckConstraint).
-
-    Status lifecycle:
-        none    (no record exists)
-        pending -> accepted
-        pending -> blocked   (only the RECIPIENT may block a pending request)
-        accepted -> blocked  (either participant may block)
-        none -> blocked      (proactive block of a stranger)
-        blocked -> none      (unblock: only blocked_by may call; record deleted)
+    user_a.id < user_b.id enforced at app layer (canonical_pair) and DB level.
     """
 
     STATUS_PENDING = "pending"
@@ -96,54 +87,17 @@ class Relationship(models.Model):
         (STATUS_BLOCKED, "Blocked"),
     ]
 
-    # Canonical ordering: user_a.id < user_b.id (enforced by app + DB constraint)
-    user_a = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="relationships_as_a",
-    )
-    user_b = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="relationships_as_b",
-    )
-
-    status = models.CharField(
-        max_length=10,
-        choices=STATUS_CHOICES,
-        default=STATUS_PENDING,
-    )
-
-    # The user who sent the original chat request.
-    # For proactive blocks (NONE -> BLOCKED) this is the blocker.
-    requested_by = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="sent_requests",
-    )
-
-    # The initial message sent with the request.
-    # Stored here; copied into ChatMessage on accept (exactly once).
+    user_a = models.ForeignKey(User, on_delete=models.CASCADE, related_name="relationships_as_a")
+    user_b = models.ForeignKey(User, on_delete=models.CASCADE, related_name="relationships_as_b")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    requested_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sent_requests")
     request_message = models.TextField(blank=True, default="")
-
-    # Set when status=blocked; null otherwise.
-    blocked_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="blocks_initiated",
-    )
-
+    blocked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="blocks_initiated")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        # Application-enforced: canonical_pair() always places lower id in user_a.
-        # DB-enforced uniqueness: only one record per unordered pair.
         unique_together = [("user_a", "user_b")]
-        # DB-level check: user_a_id must be strictly less than user_b_id.
-        # Supported on MySQL >= 8.0.16 and all modern Postgres/SQLite versions.
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(user_a_id__lt=models.F("user_b_id")),
@@ -155,8 +109,72 @@ class Relationship(models.Model):
     def __str__(self):
         return f"{self.user_a} <-> {self.user_b} [{self.status}]"
 
+    @classmethod
+    def canonical_pair(cls, user_x, user_y):
+        if user_x.id < user_y.id:
+            return user_x, user_y
+        return user_y, user_x
+
+    @classmethod
+    def get_for_users(cls, user_x, user_y):
+        a, b = cls.canonical_pair(user_x, user_y)
+        try:
+            return cls.objects.get(user_a=a, user_b=b)
+        except cls.DoesNotExist:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# ConversationState  (new)
+# ---------------------------------------------------------------------------
+
+class ConversationState(models.Model):
+    """
+    Per-user conversation preferences for an unordered user pair.
+    Canonical ordering: user_a.id < user_b.id (same convention as Relationship).
+
+    This record is independent of Relationship — it persists across unblock
+    cycles and does not have a FK to Relationship.
+
+    Flags (all per-user, tracked for each side independently):
+      chat_deleted_by_a   — user_a has "deleted" the chat (no longer sees messages)
+      chat_deleted_by_b   — user_b has "deleted" the chat
+      sidebar_hidden_by_a — user_a has hidden this conversation from their sidebar
+      sidebar_hidden_by_b — user_b has hidden this conversation from their sidebar
+
+    When both chat_deleted_by_a and chat_deleted_by_b are True, all ChatMessage
+    records for the pair should be permanently deleted by the calling view.
+    """
+
+    user_a = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="conversation_states_as_a",
+    )
+    user_b = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="conversation_states_as_b",
+    )
+
+    chat_deleted_by_a = models.BooleanField(default=False)
+    chat_deleted_by_b = models.BooleanField(default=False)
+
+    sidebar_hidden_by_a = models.BooleanField(default=False)
+    sidebar_hidden_by_b = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("user_a", "user_b")]
+        verbose_name_plural = "Conversation States"
+
+    def __str__(self):
+        return f"ConvState({self.user_a_id}, {self.user_b_id})"
+
     # ------------------------------------------------------------------
-    # Class-level helpers
+    # Helpers
     # ------------------------------------------------------------------
 
     @classmethod
@@ -167,10 +185,50 @@ class Relationship(models.Model):
         return user_y, user_x
 
     @classmethod
+    def get_or_create_for_users(cls, user_x, user_y):
+        """Return (ConversationState, created) for the pair."""
+        a, b = cls.canonical_pair(user_x, user_y)
+        return cls.objects.get_or_create(user_a=a, user_b=b)
+
+    @classmethod
     def get_for_users(cls, user_x, user_y):
-        """Return the Relationship between user_x and user_y, or None."""
+        """Return the ConversationState or None."""
         a, b = cls.canonical_pair(user_x, user_y)
         try:
             return cls.objects.get(user_a=a, user_b=b)
         except cls.DoesNotExist:
             return None
+
+    def chat_deleted_for(self, user):
+        """Return True if this user has deleted the chat."""
+        if user.id == self.user_a_id:
+            return self.chat_deleted_by_a
+        return self.chat_deleted_by_b
+
+    def sidebar_hidden_for(self, user):
+        """Return True if this user has hidden this conversation from sidebar."""
+        if user.id == self.user_a_id:
+            return self.sidebar_hidden_by_a
+        return self.sidebar_hidden_by_b
+
+    def set_chat_deleted_for(self, user, value=True):
+        """Mark the chat as deleted for the given user and save."""
+        if user.id == self.user_a_id:
+            self.chat_deleted_by_a = value
+        else:
+            self.chat_deleted_by_b = value
+        self.save(update_fields=[
+            "chat_deleted_by_a" if user.id == self.user_a_id else "chat_deleted_by_b",
+            "updated_at",
+        ])
+
+    def set_sidebar_hidden_for(self, user, value=True):
+        """Mark the sidebar as hidden for the given user and save."""
+        if user.id == self.user_a_id:
+            self.sidebar_hidden_by_a = value
+        else:
+            self.sidebar_hidden_by_b = value
+        self.save(update_fields=[
+            "sidebar_hidden_by_a" if user.id == self.user_a_id else "sidebar_hidden_by_b",
+            "updated_at",
+        ])

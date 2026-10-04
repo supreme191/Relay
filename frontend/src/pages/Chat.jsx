@@ -22,28 +22,23 @@ const RECONNECT_DELAY_MS = 3000;
 const Chat = () => {
     const { user, accessToken } = useAuth();
 
-    // ---- Chat (room) WebSocket ----
     const socketRef = useRef(null);
 
     const [selectedUser, setSelectedUser] = useState(null);
     const [newMessage, setNewMessage] = useState(null);
     const [messageRefresh] = useState(0);
 
-    // ---- Relationship state for the currently selected conversation ----
     const [relationship, setRelationship] = useState(null);
 
-    // ---- Inbox state ----
+    // Whether the current user has deleted their side of this chat.
+    const [chatDeleted, setChatDeleted] = useState(false);
+
     const [conversations, setConversations] = useState([]);
     const [inboxLoading, setInboxLoading] = useState(true);
     const [inboxError, setInboxError] = useState("");
     const [wsDisconnected, setWsDisconnected] = useState(false);
-
-    // ---- Pending incoming chat requests ----
-    // Each entry is a Relationship object (from the backend) enriched with
-    // sender_profile from the WS event or derived from the REST response.
     const [incomingRequests, setIncomingRequests] = useState([]);
 
-    // ---- Inbox WebSocket refs ----
     const inboxSocketRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
     const reconnectTimerRef = useRef(null);
@@ -59,25 +54,13 @@ const Chat = () => {
     // Incoming request helpers
     // -----------------------------------------------------------------------
 
-    /**
-     * Add a request to the incomingRequests list, deduplicating by id.
-     * Used both from the REST init fetch and the WS chat_request event.
-     * Each request entry shape:
-     *   { id, sender_profile, request_message, ... }
-     * where sender_profile is a Profile object.
-     */
     const addIncomingRequest = useCallback((req) => {
         setIncomingRequests((prev) => {
-            const exists = prev.some((r) => r.id === req.id);
-            if (exists) return prev;
+            if (prev.some((r) => r.id === req.id)) return prev;
             return [req, ...prev];
         });
     }, []);
 
-    /**
-     * Remove a request by relationship id.
-     * Called on accept, block, or when the relationship is otherwise resolved.
-     */
     const removeIncomingRequest = useCallback((relationshipId) => {
         setIncomingRequests((prev) => prev.filter((r) => r.id !== relationshipId));
     }, []);
@@ -93,14 +76,7 @@ const Chat = () => {
 
         setConversations((prev) => {
             const idx = prev.findIndex((c) => c.key === key);
-            const updated = {
-                key,
-                other_user_id,
-                other_user,
-                latest_message,
-                timestamp,
-                unread_count: effectiveUnread,
-            };
+            const updated = { key, other_user_id, other_user, latest_message, timestamp, unread_count: effectiveUnread };
             if (idx === -1) return [updated, ...prev];
             const next = prev.filter((_, i) => i !== idx);
             return [updated, ...next];
@@ -108,7 +84,7 @@ const Chat = () => {
     }, []);
 
     // -----------------------------------------------------------------------
-    // Handle incoming WebSocket events on the inbox socket
+    // WebSocket event handler
     // -----------------------------------------------------------------------
 
     const handleInboxEvent = useCallback((payload) => {
@@ -118,21 +94,13 @@ const Chat = () => {
                 break;
 
             case "chat_request": {
-                // Add to the global pending request list (deduped by id).
-                // sender_profile comes directly from the WS payload.
                 addIncomingRequest({
                     id: payload.request_id,
                     sender_profile: payload.sender_profile,
                     request_message: payload.message,
                     sender_id: payload.sender_id,
                 });
-
-                // If the sender happens to be the currently selected user,
-                // also update the per-conversation relationship state.
-                if (
-                    selectedUserIdRef.current &&
-                    String(payload.sender_id) === selectedUserIdRef.current
-                ) {
+                if (selectedUserIdRef.current && String(payload.sender_id) === selectedUserIdRef.current) {
                     setRelationship((prev) => ({
                         ...(prev || {}),
                         id: payload.request_id,
@@ -148,11 +116,7 @@ const Chat = () => {
             }
 
             case "chat_request_accepted":
-                // My outgoing request was accepted — no change to incomingRequests.
-                if (
-                    selectedUserIdRef.current &&
-                    String(payload.accepted_by_id) === selectedUserIdRef.current
-                ) {
+                if (selectedUserIdRef.current && String(payload.accepted_by_id) === selectedUserIdRef.current) {
                     setRelationship((prev) => ({
                         ...(prev || {}),
                         status: "accepted",
@@ -164,11 +128,7 @@ const Chat = () => {
                 break;
 
             case "chat_request_blocked":
-                // I was blocked. Update relationship if this is the selected user.
-                if (
-                    selectedUserIdRef.current &&
-                    String(payload.blocked_by_id) === selectedUserIdRef.current
-                ) {
+                if (selectedUserIdRef.current && String(payload.blocked_by_id) === selectedUserIdRef.current) {
                     setRelationship((prev) => ({
                         ...(prev || {}),
                         status: "blocked",
@@ -180,15 +140,7 @@ const Chat = () => {
                 break;
 
             case "chat_unblocked":
-                // The unblocked user (me) is notified. unblocked_by_id is the
-                // blocker's ID — i.e. the other person in the conversation.
-                // Update if the currently selected user is the one who unblocked us.
-                // Use a clean { status: "none" } object without spreading prev so
-                // no stale i_am_blocked_by / i_am_blocker flags carry over.
-                if (
-                    selectedUserIdRef.current &&
-                    String(payload.unblocked_by_id) === selectedUserIdRef.current
-                ) {
+                if (selectedUserIdRef.current && String(payload.unblocked_by_id) === selectedUserIdRef.current) {
                     setRelationship({
                         status: "none",
                         other_user_id: payload.unblocked_by_id,
@@ -210,12 +162,7 @@ const Chat = () => {
 
     const connectInboxSocket = useCallback(() => {
         if (!user || !accessToken) return;
-        if (
-            inboxSocketRef.current &&
-            inboxSocketRef.current.readyState === WebSocket.OPEN
-        ) {
-            return;
-        }
+        if (inboxSocketRef.current && inboxSocketRef.current.readyState === WebSocket.OPEN) return;
 
         let socket;
         try {
@@ -226,25 +173,12 @@ const Chat = () => {
         }
 
         inboxSocketRef.current = socket;
-
-        socket.onopen = () => {
-            reconnectAttemptsRef.current = 0;
-            setWsDisconnected(false);
-        };
-
+        socket.onopen = () => { reconnectAttemptsRef.current = 0; setWsDisconnected(false); };
         socket.onmessage = (event) => {
-            try {
-                const payload = JSON.parse(event.data);
-                handleInboxEvent(payload);
-            } catch (err) {
-                console.error("Inbox WS parse error:", err);
-            }
+            try { handleInboxEvent(JSON.parse(event.data)); }
+            catch (err) { console.error("Inbox WS parse error:", err); }
         };
-
-        socket.onerror = (err) => {
-            console.error("Inbox WebSocket error:", err);
-        };
-
+        socket.onerror = (err) => console.error("Inbox WebSocket error:", err);
         socket.onclose = () => {
             inboxSocketRef.current = null;
             if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
@@ -271,13 +205,10 @@ const Chat = () => {
                 const data = await getInbox(user.user_id);
                 const normalised = data.map((item) => {
                     const otherUserId = item.other_user_id;
-                    const key = String(otherUserId);
-                    const otherUser =
-                        String(item.sender.id) === String(user.user_id)
-                            ? item.reciever_profile
-                            : item.sender_profile;
+                    const otherUser = String(item.sender.id) === String(user.user_id)
+                        ? item.reciever_profile : item.sender_profile;
                     return {
-                        key,
+                        key: String(otherUserId),
                         other_user_id: otherUserId,
                         other_user: otherUser,
                         latest_message: item.message,
@@ -297,16 +228,13 @@ const Chat = () => {
         const fetchIncomingRequests = async () => {
             try {
                 const data = await getIncomingRequests();
-                // The backend now includes sender_profile (ProfileSerializer) in
-                // each IncomingRequests response item — same shape as the WS event.
-                const normalised = data.map((rel) => ({
+                setIncomingRequests(data.map((rel) => ({
                     id: rel.id,
                     sender_id: rel.requested_by?.id,
-                    sender_profile: rel.sender_profile,   // ProfileSerializer shape
+                    sender_profile: rel.sender_profile,
                     request_message: rel.request_message,
-                    _rel: rel,  // full relationship object for ChatRequestPanel
-                }));
-                setIncomingRequests(normalised);
+                    _rel: rel,
+                })));
             } catch (err) {
                 console.error("Failed to load incoming requests:", err);
             }
@@ -328,7 +256,7 @@ const Chat = () => {
     }, [user, accessToken, connectInboxSocket]);
 
     // -----------------------------------------------------------------------
-    // Conversation selection: fetch relationship + mark as read
+    // Conversation selection
     // -----------------------------------------------------------------------
 
     const handleSelectUser = useCallback(
@@ -338,11 +266,10 @@ const Chat = () => {
 
             setSelectedUser(otherUserProfile);
             setRelationship(null);
+            setChatDeleted(false);
 
             setConversations((prev) =>
-                prev.map((c) =>
-                    c.key === incomingId ? { ...c, unread_count: 0 } : c
-                )
+                prev.map((c) => c.key === incomingId ? { ...c, unread_count: 0 } : c)
             );
 
             try {
@@ -353,48 +280,47 @@ const Chat = () => {
                 setRelationship({ status: "none" });
             }
 
-            try {
-                await markAsRead(otherUserProfile.user.id);
-            } catch (_) {
-                // silently ignore
-            }
+            try { await markAsRead(otherUserProfile.user.id); }
+            catch (_) {}
         },
         [selectedUser]
     );
 
-    // -----------------------------------------------------------------------
-    // Called by Sidebar when a pending request is accepted or blocked,
-    // so we can remove it from the notification list.
-    // -----------------------------------------------------------------------
-
-    const handleRequestResolved = useCallback((relationshipId) => {
-        removeIncomingRequest(relationshipId);
+    const handleRequestResolved = useCallback((id) => {
+        removeIncomingRequest(id);
     }, [removeIncomingRequest]);
 
-    // -----------------------------------------------------------------------
-    // onRelChange passed to ChatRequestPanel — also removes the request from
-    // the notification list when it transitions out of PENDING.
-    // -----------------------------------------------------------------------
-
     const handleRelChange = useCallback((newRel) => {
-        // ChatRequestPanel.handleUnblock calls onRelChange(null) to signal NONE.
-        // null would make showRequestPanel false (blank screen). Normalise to an
-        // explicit { status: "none" } object so ChatRequestPanel renders correctly
-        // for BOTH the blocker and the unblocked user after an unblock.
         const normalised = newRel === null ? { status: "none" } : newRel;
         setRelationship(normalised);
 
-        // Remove from the pending incoming request list whenever a request
-        // transitions out of PENDING (accepted, blocked, or unblocked/none).
         if (!newRel || newRel.status === "accepted" || newRel.status === "blocked" || newRel.i_am_blocker) {
-            // newRel.id is present for accepted/blocked; for null (unblock from NONE)
-            // there is no id to remove, but that means it was never pending anyway.
             if (newRel?.id) removeIncomingRequest(newRel.id);
         }
         if (newRel?.status === "accepted") {
+            setChatDeleted(false);
             setNewMessage(null);
         }
     }, [removeIncomingRequest]);
+
+    // -----------------------------------------------------------------------
+    // Delete Chat
+    // - Removes from sidebar (chat_deleted_for filters MyInbox).
+    // - Hides message history for this user.
+    // - Resets the main panel to "no conversation selected".
+    // -----------------------------------------------------------------------
+
+    const handleDeleteChat = useCallback(() => {
+        if (selectedUser) {
+            const key = String(selectedUser.user.id);
+            // Remove from sidebar immediately
+            setConversations((prev) => prev.filter((c) => c.key !== key));
+        }
+        // Reset main area
+        setSelectedUser(null);
+        setRelationship(null);
+        setChatDeleted(false);
+    }, [selectedUser]);
 
     // -----------------------------------------------------------------------
     // Chat (room) WebSocket — only open when relationship is accepted
@@ -403,43 +329,24 @@ const Chat = () => {
     useEffect(() => {
         if (!selectedUser || !user) return;
         if (relationship?.status !== "accepted") {
-            if (socketRef.current) {
-                socketRef.current.close();
-                socketRef.current = null;
-            }
+            if (socketRef.current) { socketRef.current.close(); socketRef.current = null; }
             return;
         }
 
-        const currentUserId = user.user_id;
-        const selectedUserId = selectedUser.user.id;
-        const roomName = [currentUserId, selectedUserId]
-            .sort((a, b) => a - b)
-            .join("_");
-
+        const roomName = [user.user_id, selectedUser.user.id].sort((a, b) => a - b).join("_");
         const socket = createChatSocket(`chat_${roomName}`);
         socketRef.current = socket;
 
-        socket.onopen = () => {
-            console.log("Chat WebSocket connected:", `chat_${roomName}`);
-        };
-
+        socket.onopen = () => console.log("Chat WebSocket connected:", `chat_${roomName}`);
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            if (data.type === "message") {
-                setNewMessage(data.message);
-            }
-            if (data.type === "error") {
-                console.warn("Chat WS error from server:", data.detail);
-            }
+            if (data.type === "message") setNewMessage(data.message);
+            if (data.type === "error") console.warn("Chat WS error:", data.detail);
         };
-
-        socket.onerror = (error) => console.error("Chat WebSocket error:", error);
+        socket.onerror = (e) => console.error("Chat WebSocket error:", e);
         socket.onclose = () => console.log("Chat WebSocket disconnected");
 
-        return () => {
-            socket.close();
-            socketRef.current = null;
-        };
+        return () => { socket.close(); socketRef.current = null; };
     }, [selectedUser, user, relationship]);
 
     // -----------------------------------------------------------------------
@@ -448,8 +355,19 @@ const Chat = () => {
 
     const relStatus = relationship?.status ?? null;
     const isAccepted = relStatus === "accepted";
+    const isBlocked = relStatus === "blocked";
     const iAmBlockedBy = relationship?.i_am_blocked_by ?? false;
-    const showRequestPanel = relationship !== null && !isAccepted;
+
+    // Show ChatRequestPanel for all states once relationship is loaded.
+    // For ACCEPTED it renders as a slim top bar (Block button).
+    // For BLOCKED it renders as a slim bottom bar (status + actions).
+    // For other states it renders a full centered panel.
+    const showRequestPanel = relationship !== null;
+
+    // Show message list when:
+    // - accepted and not deleted (normal), OR
+    // - blocked and not deleted (user can still see history while blocked)
+    const showMessages = (isAccepted || isBlocked) && !chatDeleted;
 
     // -----------------------------------------------------------------------
     // Render
@@ -473,35 +391,68 @@ const Chat = () => {
 
                 <ChatHeader selectedUser={selectedUser} />
 
+                {/* No conversation selected */}
                 {!selectedUser && (
                     <div className="flex-1 flex items-center justify-center">
                         <p className="text-gray-400">Select a conversation to start chatting.</p>
                     </div>
                 )}
 
-                {selectedUser && showRequestPanel && (
-                    <ChatRequestPanel
-                        relationship={relationship}
-                        otherUser={selectedUser}
-                        onRelChange={handleRelChange}
-                    />
-                )}
+                {selectedUser && (
+                    <>
+                        {/* ACCEPTED: slim block bar at top, then messages, then input */}
+                        {/* NON-ACCEPTED/NON-BLOCKED: full centered panel */}
+                        {/* BLOCKED: messages, then slim status bar at bottom */}
 
-                {selectedUser && isAccepted && (
-                    <MessageList
-                        selectedUser={selectedUser}
-                        messageRefresh={messageRefresh}
-                        newMessage={newMessage}
-                    />
-                )}
+                        {/* For accepted: render block bar above message list */}
+                        {showRequestPanel && isAccepted && (
+                            <ChatRequestPanel
+                                relationship={relationship}
+                                otherUser={selectedUser}
+                                onRelChange={handleRelChange}
+                                onDeleteChat={handleDeleteChat}
+                            />
+                        )}
 
-                {selectedUser && isAccepted && (
-                    <MessageInput
-                        selectedUser={selectedUser}
-                        socketRef={socketRef}
-                        relationshipStatus={relStatus}
-                        blockedByOther={iAmBlockedBy}
-                    />
+                        {/* For none/pending: full centered panel (replaces message area) */}
+                        {showRequestPanel && !isAccepted && !isBlocked && (
+                            <ChatRequestPanel
+                                relationship={relationship}
+                                otherUser={selectedUser}
+                                onRelChange={handleRelChange}
+                                onDeleteChat={handleDeleteChat}
+                            />
+                        )}
+
+                        {/* Message list — accepted (normal) or blocked (view history) */}
+                        {showMessages && (
+                            <MessageList
+                                selectedUser={selectedUser}
+                                messageRefresh={messageRefresh}
+                                newMessage={newMessage}
+                            />
+                        )}
+
+                        {/* For blocked: slim status bar below messages */}
+                        {showRequestPanel && isBlocked && (
+                            <ChatRequestPanel
+                                relationship={relationship}
+                                otherUser={selectedUser}
+                                onRelChange={handleRelChange}
+                                onDeleteChat={handleDeleteChat}
+                            />
+                        )}
+
+                        {/* Message input — only when accepted */}
+                        {isAccepted && (
+                            <MessageInput
+                                selectedUser={selectedUser}
+                                socketRef={socketRef}
+                                relationshipStatus={relStatus}
+                                blockedByOther={iAmBlockedBy}
+                            />
+                        )}
+                    </>
                 )}
 
             </main>

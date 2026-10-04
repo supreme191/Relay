@@ -18,7 +18,7 @@ urlpatterns = [
     path("profile/<int:pk>/", views.ProfileDetail.as_view(), name="profile-detail"),
     path("search/<username>/", views.SearchUser.as_view(), name="search-user"),
 
-    # ---- Relationships (new) ----
+    # ---- Relationships ----
     path("relationship/<int:other_user_id>/", views.RelationshipStatus.as_view(), name="relationship-status"),
     path("relationship/request/", views.SendChatRequest.as_view(), name="send-chat-request"),
     path("relationship/requests/incoming/", views.IncomingRequests.as_view(), name="incoming-requests"),
@@ -26,4 +26,7 @@ urlpatterns = [
     path("relationship/block/", views.BlockUser.as_view(), name="block-user"),
     path("relationship/unblock/", views.UnblockUser.as_view(), name="unblock-user"),
     path("relationship/blocked/", views.BlockedUsers.as_view(), name="blocked-users"),
+
+    # ---- Conversation state (new) ----
+    path("conversation/delete/", views.DeleteChat.as_view(), name="delete-chat"),
 ]

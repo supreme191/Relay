@@ -88,3 +88,12 @@ export const getBlockedUsers = async () => {
     const response = await api.get("relationship/blocked/");
     return response.data;
 };
+
+// ---- Conversation state (new) ----
+
+export const deleteChat = async (otherUserId) => {
+    const response = await api.post("conversation/delete/", {
+        other_user_id: otherUserId,
+    });
+    return response.data;
+};

@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import OuterRef, Subquery, Q
 
-from api.models import User, Profile, ChatMessage, Relationship
+from api.models import User, Profile, ChatMessage, Relationship, ConversationState
 from api.serializers import (
     MessageSerializer,
     MyTokenObtainPairSerializer,
@@ -78,19 +78,32 @@ class MyInbox(generics.ListAPIView):
             )
 
         queryset = self.get_queryset()
-        current_user_id = request.user.id
+        current_user = request.user
         result = []
+
         for msg in queryset:
-            other_user_id = msg.reciever_id if msg.sender_id == current_user_id else msg.sender_id
+            other_user_id = msg.reciever_id if msg.sender_id == current_user.id else msg.sender_id
+
+            # Skip conversations this user has deleted
+            try:
+                other = User.objects.get(id=other_user_id)
+                cs = ConversationState.get_for_users(current_user, other)
+                if cs and cs.chat_deleted_for(current_user):
+                    continue
+            except User.DoesNotExist:
+                pass
+
             unread_count = ChatMessage.objects.filter(
                 sender_id=other_user_id,
-                reciever_id=current_user_id,
+                reciever_id=current_user.id,
                 is_read=False,
             ).count()
+
             serialized = MessageSerializer(msg).data
             serialized["unread_count"] = unread_count
             serialized["other_user_id"] = other_user_id
             result.append(serialized)
+
         return Response(result)
 
 
@@ -98,9 +111,12 @@ class GetMessages(generics.ListAPIView):
     """
     GET /api/get-messages/<sender_id>/<reciever_id>/
 
-    FIX: Verify request.user is one of the two participants, then check
-    the relationship.  ACCEPTED only; NONE / PENDING / BLOCKED => 403.
-    Do not trust the URL params as an authorization boundary.
+    Access rules:
+    - request.user must be one of the two participants
+    - NONE / PENDING: forbidden
+    - ACCEPTED: allowed (normal)
+    - BLOCKED: allowed only if the requesting user has NOT deleted their chat
+    - If the requesting user deleted their chat: forbidden (they have no messages)
     """
     serializer_class = MessageSerializer
     permission_classes = [IsAuthenticated]
@@ -116,14 +132,12 @@ class GetMessages(generics.ListAPIView):
         except (TypeError, ValueError):
             return Response({"detail": "Invalid user IDs."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # request.user must be one of the two participants
         if me.id not in (sender_id, reciever_id):
             return Response(
                 {"detail": "You are not a participant in this conversation."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Identify the other participant
         other_id = reciever_id if me.id == sender_id else sender_id
 
         try:
@@ -131,7 +145,14 @@ class GetMessages(generics.ListAPIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Relationship must be ACCEPTED; anything else is forbidden
+        # Check per-user delete state first — if deleted, no messages for this user
+        cs = ConversationState.get_for_users(me, other)
+        if cs and cs.chat_deleted_for(me):
+            return Response(
+                {"detail": "You have deleted this conversation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         rel = Relationship.get_for_users(me, other)
         if rel is None:
             return Response(
@@ -143,26 +164,18 @@ class GetMessages(generics.ListAPIView):
                 {"detail": "Chat request has not been accepted yet."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if rel.status == Relationship.STATUS_BLOCKED:
-            return Response(
-                {"detail": "Cannot view messages while blocked."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # BLOCKED: allow read (both sides may view history unless they deleted)
+        # ACCEPTED: allow normally
 
-        # ACCEPTED - return messages
         messages = ChatMessage.objects.filter(
             sender__in=[sender_id, reciever_id],
             reciever__in=[sender_id, reciever_id],
         )
-        serializer = self.get_serializer(messages, many=True)
-        return Response(serializer.data)
+        return Response(self.get_serializer(messages, many=True).data)
 
 
 class SendMessages(APIView):
-    """
-    POST /api/send-messages/
-    Sender = request.user. Requires ACCEPTED relationship.
-    """
+    """POST /api/send-messages/ — Sender = request.user. Requires ACCEPTED."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -236,11 +249,10 @@ class SearchUser(generics.ListAPIView):
 
 
 # ---------------------------------------------------------------------------
-# Shared helper
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def _check_message_allowed(sender, receiver):
-    """Return None if messaging is allowed; return an error string otherwise."""
     rel = Relationship.get_for_users(sender, receiver)
     if rel is None:
         return "You must be connected to send messages."
@@ -254,7 +266,6 @@ def _check_message_allowed(sender, receiver):
 
 
 def _push_ws_event(group_name, payload):
-    """Fire-and-forget: push a channel-layer event to an inbox group."""
     try:
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
@@ -364,15 +375,11 @@ class IncomingRequests(APIView):
             "user_a", "user_b", "requested_by"
         ).order_by("-created_at")
 
-        # Enrich each result with the sender's ProfileSerializer data so the
-        # frontend gets the same shape as the WS chat_request event payload.
         result = []
         for rel in rels:
             data = RelationshipSerializer(rel).data
             try:
-                sender_profile = Profile.objects.select_related("user").get(
-                    user=rel.requested_by
-                )
+                sender_profile = Profile.objects.select_related("user").get(user=rel.requested_by)
                 data["sender_profile"] = ProfileSerializer(sender_profile).data
             except Profile.DoesNotExist:
                 data["sender_profile"] = None
@@ -382,13 +389,7 @@ class IncomingRequests(APIView):
 
 
 class AcceptRequest(APIView):
-    """
-    POST /api/relationship/<relationship_id>/accept/
-
-    FIX: Create the initial ChatMessage with is_read=True because the
-    recipient is actively accepting and will immediately view the conversation.
-    This prevents a spurious unread badge on the recipient's sidebar.
-    """
+    """POST /api/relationship/<relationship_id>/accept/"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, relationship_id):
@@ -405,16 +406,27 @@ class AcceptRequest(APIView):
         with transaction.atomic():
             rel.status = Relationship.STATUS_ACCEPTED
             rel.save(update_fields=["status", "updated_at"])
-
-            # FIX: is_read=True — the recipient just accepted and is present.
-            # The requester (sender of the initial message) is unaffected;
-            # their own outgoing message is never counted as unread for them.
             initial_msg = ChatMessage.objects.create(
                 sender=rel.requested_by,
                 reciever=me,
                 message=rel.request_message,
                 is_read=True,
             )
+            # Reset any stale ConversationState from a previous delete cycle.
+            # If both users previously deleted this conversation and a new request
+            # was subsequently sent and accepted, the old chat_deleted flags must
+            # be cleared so both sides can see the fresh conversation.
+            cs = ConversationState.get_for_users(rel.requested_by, me)
+            if cs:
+                cs.chat_deleted_by_a = False
+                cs.chat_deleted_by_b = False
+                cs.sidebar_hidden_by_a = False
+                cs.sidebar_hidden_by_b = False
+                cs.save(update_fields=[
+                    "chat_deleted_by_a", "chat_deleted_by_b",
+                    "sidebar_hidden_by_a", "sidebar_hidden_by_b",
+                    "updated_at",
+                ])
 
         requester = rel.requested_by
 
@@ -443,14 +455,7 @@ class AcceptRequest(APIView):
 class BlockUser(APIView):
     """
     POST /api/relationship/block/
-    Body: { "other_user_id": <int> }
-
-    Allowed transitions:
-      NONE     -> BLOCKED  (proactive block of a stranger; either user)
-      ACCEPTED -> BLOCKED  (either participant may block)
-      PENDING  -> BLOCKED  (FIX: ONLY the RECIPIENT may block; requester may NOT)
-
-    The PENDING restriction is enforced here, not only in the frontend.
+    Transitions: NONE->BLOCKED, PENDING->BLOCKED (recipient only), ACCEPTED->BLOCKED (either)
     """
     permission_classes = [IsAuthenticated]
 
@@ -472,33 +477,19 @@ class BlockUser(APIView):
             rel, created = Relationship.objects.select_for_update().get_or_create(
                 user_a=user_a,
                 user_b=user_b,
-                defaults={
-                    # NONE -> BLOCKED (proactive block)
-                    "status": Relationship.STATUS_BLOCKED,
-                    "requested_by": me,
-                    "blocked_by": me,
-                },
+                defaults={"status": Relationship.STATUS_BLOCKED, "requested_by": me, "blocked_by": me},
             )
-
             if not created:
                 if rel.status == Relationship.STATUS_BLOCKED:
                     if rel.blocked_by_id == me.id:
                         return Response({"detail": "Already blocked."}, status=status.HTTP_409_CONFLICT)
-                    # The other user blocked me; I cannot re-block
                     return Response({"detail": "You have been blocked by this user."}, status=status.HTTP_403_FORBIDDEN)
-
                 if rel.status == Relationship.STATUS_PENDING:
-                    # FIX: Only the RECIPIENT (not the requester) may block
-                    # a pending request.  The requester cannot use BlockUser to
-                    # circumvent the pending state machine.
                     if rel.requested_by_id == me.id:
                         return Response(
-                            {"detail": "You cannot block the recipient of your own pending request. Cancel the request first or wait for a response."},
+                            {"detail": "You cannot block the recipient of your own pending request."},
                             status=status.HTTP_403_FORBIDDEN,
                         )
-                    # me is the recipient -> allowed to block
-
-                # ACCEPTED or PENDING-recipient: transition to BLOCKED
                 rel.status = Relationship.STATUS_BLOCKED
                 rel.blocked_by = me
                 rel.save(update_fields=["status", "blocked_by", "updated_at"])
@@ -551,9 +542,7 @@ class BlockedUsers(APIView):
 
     def get(self, request):
         me = request.user
-        rels = Relationship.objects.filter(
-            status=Relationship.STATUS_BLOCKED, blocked_by=me,
-        ).select_related("user_a", "user_b")
+        rels = Relationship.objects.filter(status=Relationship.STATUS_BLOCKED, blocked_by=me).select_related("user_a", "user_b")
         result = []
         for rel in rels:
             other = rel.user_b if rel.user_a_id == me.id else rel.user_a
@@ -566,11 +555,62 @@ class BlockedUsers(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Sync helper: push inbox_update from synchronous view code
+# Delete Chat
+# ---------------------------------------------------------------------------
+
+class DeleteChat(APIView):
+    """
+    POST /api/conversation/delete/
+    Body: { "other_user_id": <int> }
+
+    Per-user chat deletion.
+    - Marks this user's side as deleted.
+    - If BOTH sides are now deleted, permanently removes all ChatMessage records.
+    - Does NOT affect the Relationship record.
+    - Does NOT affect the other user's view until they also delete.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        me = request.user
+        other_user_id = request.data.get("other_user_id")
+
+        try:
+            other_user_id = int(other_user_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "other_user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if other_user_id == me.id:
+            return Response({"detail": "Cannot delete a conversation with yourself."}, status=status.HTTP_400_BAD_REQUEST)
+
+        other = get_object_or_404(User, id=other_user_id)
+
+        with transaction.atomic():
+            cs, _ = ConversationState.get_or_create_for_users(me, other)
+            cs_locked = ConversationState.objects.select_for_update().get(pk=cs.pk)
+
+            cs_locked.set_chat_deleted_for(me, True)
+
+            both_deleted = cs_locked.chat_deleted_for(me) and (
+                (cs_locked.chat_deleted_by_a and me.id != cs_locked.user_a_id) or
+                (cs_locked.chat_deleted_by_b and me.id != cs_locked.user_b_id) or
+                (cs_locked.chat_deleted_by_a and cs_locked.chat_deleted_by_b)
+            )
+
+            if both_deleted:
+                ChatMessage.objects.filter(
+                    Q(sender=me, reciever=other) | Q(sender=other, reciever=me)
+                ).delete()
+
+        return Response({"deleted": True}, status=status.HTTP_200_OK)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Sync helpers
 # ---------------------------------------------------------------------------
 
 def _notify_inbox_sync(current_user_id, other_user_id):
-    """Build and push an inbox_update event from synchronous view code."""
     try:
         other_profile = Profile.objects.select_related("user").get(user_id=other_user_id)
     except Profile.DoesNotExist:
