@@ -78,4 +78,3 @@ See [`backend/README.md`](backend/README.md) and [`frontend/README.md`](frontend
 
 - [Backend guide](backend/README.md): setup, API endpoints, WebSocket protocol, data model
 - [Frontend guide](frontend/README.md): structure, state flow, configuration
-- [Bug fixtures](bug_fixtures.md): problems encountered and their fixes
