@@ -43,8 +43,6 @@ React (Vite)  --REST (axios, JWT)-->  Django REST Framework  -->  MySQL
 Relay/
 ├── backend/     Django project (API, WebSocket consumers, models)
 ├── frontend/    React app (Vite)
-├── docker-compose.yml   Optional Redis container
-└── bug_fixtures.md      Notes on bugs found and how they were fixed
 ```
 
 See [`backend/README.md`](backend/README.md) and [`frontend/README.md`](frontend/README.md) for details.
